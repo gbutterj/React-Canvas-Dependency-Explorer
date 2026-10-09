@@ -62,3 +62,18 @@ IDs must be unique within their collection; edges must reference existing nodes.
 - `LayoutAdapter` is an interface only. Future layout implementations should compute coordinates without changing graph identity.
 
 See [the research and design report](docs/graph-design-research.md) for algorithm complexity, source references and current limits.
+
+## Reproducible scale benchmarks
+
+With the managed web workflow running:
+
+```sh
+node artifacts/dependency-explorer/scripts/benchmark.mjs
+node artifacts/dependency-explorer/scripts/benchmark-report.mjs
+```
+
+Run from the workspace root. Requires Node 24's native WebSocket client and Chromium (available in this environment). The browser URL defaults to the proxied development domain; `BENCHMARK_URL` can point to the developer benchmark page on another machine.
+
+The matrix covers 1,000 / 10,000 / 50,000 nodes at approximately 2 / 5 / 20 outgoing edges per node. Results and a self-contained downloadable HTML report are written to `generated-artifacts/graph-benchmarks/`, excluded from Git and deployment.
+
+The `benchmark.html` developer entry imports the real model and renderer but does not run the React panels. It is not a production build entry. Timings distinguish model costs, Canvas command submission and redraw-request-to-animation-frame latency. They do not measure physical input-to-display latency or establish a guaranteed node limit. See the report for hardware, browser rendering mode, sample counts and workload details.

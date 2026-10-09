@@ -1,0 +1,1 @@
+- [Measured scale limits](benchmark-lessons.md) — baseline benchmarks expose dense-overview and main-thread limits; qualify claims by viewport, density and software rendering.

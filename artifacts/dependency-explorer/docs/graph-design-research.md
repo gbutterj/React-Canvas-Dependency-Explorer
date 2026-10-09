@@ -77,6 +77,8 @@ Limits worth measuring before production:
 
 There is no defensible universal “maximum nodes” figure. Measure frame time, pointer latency, import time and memory across node count, edge count, graph density, icon variety, zoom level, device and display resolution.
 
+The project now includes a reproducible browser benchmark matrix at 1,000, 10,000 and 50,000 nodes with approximately 2, 5 and 20 outgoing edges per node. It tests the actual model and renderer separately from React panels. See the README's benchmark instructions and the generated report for measured results and environment qualifications; do not infer a production node limit from the fixture size.
+
 ## 5. Extension boundaries
 
 The pure graph modules have no React or Canvas dependency. A future layout worker can return positions through `LayoutAdapter`; another renderer can reuse the same index and traversals. Future persistence or collectors should produce versioned `GraphDocument` data, rather than coupling database records to Canvas objects.
