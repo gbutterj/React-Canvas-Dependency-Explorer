@@ -1,10 +1,9 @@
-import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
-import { analyzeGraph } from "@/graph/analysis";
-import { createDemoDocument } from "@/graph/fixtures";
-import { createScaleDocument, sampleFromUrl, type SampleKind, type ScaleDensity } from "@/graph/scale-fixtures";
-import { buildGraphIndex, neighborhood, parseGraphDocument, reachable } from "@/graph/model";
-import { SpatialIndex } from "@/graph/spatial";
-import type { GraphAnalysis, GraphDocument, GraphIndex, NodeKind, Point } from "@/graph/types";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { sampleFromUrl, type SampleKind, type ScaleDensity } from "@/graph/scale-fixtures";
+import { neighborhood } from "@/graph/model";
+import { GraphBackground, type BackgroundWorkspace } from "@/graph/background-client";
+import type { ImpactResult, LoadInput } from "@/graph/background-protocol";
+import type { GraphDocument, NodeKind, Point } from "@/graph/types";
 import type { Role, Scene } from "@/lib/renderer";
 
 export type Mode = "both" | "dependencies" | "dependents";
@@ -12,81 +11,30 @@ export interface Focus { root: string; depth: number }
 export interface Source { kind: "demo" | "stress" | "import"; label: string; sample?: SampleKind; density?: ScaleDensity }
 export interface Notice { id: number; tone: "ok" | "error" | "info"; text: string }
 
-export interface Workspace {
-  doc: GraphDocument;
-  index: GraphIndex;
-  analysis: GraphAnalysis;
-  positions: Map<string, Point>;
-  original: Map<string, Point>;
-  spatial: SpatialIndex;
-  pinned: Set<string>;
-  moved: Set<string>;
-  storageKey: string;
-  gridPlaced: number;
-  storageWarning: string | null;
-}
+export type Workspace = BackgroundWorkspace;
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function buildWorkspace(doc: GraphDocument): Workspace {
-  const index = buildGraphIndex(doc);
-  const analysis = analyzeGraph(index);
-  const supplied = doc.view?.positions ?? {};
-  const cols = Math.max(1, Math.ceil(Math.sqrt(doc.nodes.length)));
-  const original = new Map<string, Point>();
-  let gridPlaced = 0;
-  doc.nodes.forEach((n, i) => {
-    const p = supplied[n.id];
-    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) original.set(n.id, { x: p.x, y: p.y });
-    else {
-      original.set(n.id, { x: (i % cols) * 120, y: Math.floor(i / cols) * 120 });
-      gridPlaced++;
-    }
-  });
-  const positions = new Map<string, Point>();
-  original.forEach((p, id) => positions.set(id, { ...p }));
-  const pinned = new Set((doc.view?.pinned ?? []).filter((id) => index.nodes.has(id)));
-  const moved = new Set<string>();
-  const storageKey = `depx.layout.v1:${doc.name}:${doc.nodes.length}:${doc.edges.length}`;
-  let storageWarning: string | null = null;
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (raw) {
-       const s = parseGraphDocument({ ...doc, view: JSON.parse(raw) }).view!;
-       for (const [id, p] of Object.entries(s.positions)) {
-         positions.set(id, { x: p.x, y: p.y });
-         moved.add(id);
-       }
-       if (s.pinned) {
-         pinned.clear();
-         for (const id of s.pinned) pinned.add(id);
-       }
-    }
-  } catch (e) {
-    storageWarning = `Saved layout could not be read, using supplied positions. (${msg(e)})`;
-  }
-  return { doc, index, analysis, positions, original, spatial: new SpatialIndex(positions), pinned, moved, storageKey, gridPlaced, storageWarning };
-}
-
-type Loaded = { doc: GraphDocument | null; source: Source; error: string | null };
-function load(sample: SampleKind, density: ScaleDensity = 2): Loaded {
-  const kind = sample === "demo" ? "demo" : "stress";
-  try {
-    if (kind === "demo") return { doc: createDemoDocument(), source: { kind, sample, label: "Demo dataset (synthetic)" }, error: null };
-    const count = sample === "scale-1000" ? 1000 : sample === "scale-50000" ? 50000 : 10000;
-    return { doc: createScaleDocument(count, density), source: { kind, sample, density, label: `${count.toLocaleString()} synthetic nodes` }, error: null };
-  } catch (e) {
-    return { doc: null, source: { kind, label: "Dataset" }, error: msg(e) };
-  }
+function sampleSource(sample: SampleKind, density: ScaleDensity): Source {
+  if (sample === "demo") return { kind: "demo", sample, label: "Demo dataset (synthetic)" };
+  const count = sample === "scale-1000" ? 1000 : sample === "scale-50000" ? 50000 : 10000;
+  return { kind: "stress", sample, density, label: `${count.toLocaleString()} synthetic nodes` };
 }
 
 export function useWorkbench() {
-  const [loaded, setLoaded] = useState<Loaded>(() => {
+  const [ws, setWorkspace] = useState<Workspace | null>(null);
+  const [source, setSource] = useState<Source>(() => {
     const sample = sampleFromUrl();
-    return load(sample.kind, sample.density);
+    return sampleSource(sample.kind, sample.density);
   });
-  const [loading, setLoading] = useState(false);
-   const [selected, setSelected] = useState<string | null>(() => sampleFromUrl().kind === "demo" ? "checkout-api" : null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadPhase, setLoadPhase] = useState("Starting background processing");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [impactState, setImpactState] = useState<{ ws: Workspace; root: string; result?: ImpactResult; error?: string } | null>(null);
+  const background = useRef<GraphBackground | null>(null);
+  if (!background.current) background.current = new GraphBackground();
+  const loadSequence = useRef(0);
   const [query, setQuery] = useState("");
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<NodeKind>>(new Set());
   const [cyclesOnly, setCyclesOnly] = useState(false);
@@ -101,16 +49,6 @@ export function useWorkbench() {
   const noticeTimer = useRef(0);
   const deferredQuery = useDeferredValue(query);
 
-  const built = useMemo<{ ws: Workspace | null; error: string | null }>(() => {
-    if (!loaded.doc) return { ws: null, error: loaded.error };
-    try {
-      return { ws: buildWorkspace(loaded.doc), error: null };
-    } catch (e) {
-      return { ws: null, error: msg(e) };
-    }
-  }, [loaded]);
-  const ws = built.ws;
-
   const notify = useCallback((tone: Notice["tone"], text: string) => {
     clearTimeout(noticeTimer.current);
     setNotice({ id: Date.now(), tone, text });
@@ -122,40 +60,71 @@ export function useWorkbench() {
     setFocus(null); setDirty(false); setPersistError(null);
   }, []);
 
-  const loadDoc = useCallback((doc: GraphDocument, source: Source) => {
-    resetView();
-    setLoaded({ doc, source, error: null });
-    setFitTick((t) => t + 1);
-  }, [resetView]);
-
-  const loadSample = useCallback((kind: SampleKind, density: ScaleDensity = loaded.source.density ?? 2) => {
+  const startLoad = useCallback(async (input: LoadInput, nextSource: Source): Promise<string | null> => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
-    window.setTimeout(() => {
-      const r = load(kind, density);
+    setLoadPhase("Starting background processing");
+    setError(null);
+    try {
+      const next = await background.current!.load(input, (phase) => {
+        if (sequence === loadSequence.current) setLoadPhase(phase);
+      });
+      if (sequence !== loadSequence.current) return "Loading cancelled.";
       resetView();
-      setLoaded(r);
+      setWorkspace(next);
+      setSource(nextSource.kind === "import" ? { ...nextSource, label: `Imported: ${input.kind === "import" ? input.name || next.doc.name : next.doc.name}` } : nextSource);
+      if (input.kind === "sample" && input.sample === "demo") setSelected("checkout-api");
       setLoading(false);
       setFitTick((t) => t + 1);
-      if (r.error) notify("error", r.error);
-    }, 30);
-  }, [resetView, notify, loaded.source.density]);
-
-  const importText = useCallback((text: string, name: string): string | null => {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch (e) {
-      return `Not valid JSON: ${msg(e)}`;
-    }
-    try {
-      const doc = parseGraphDocument(raw);
-      loadDoc(doc, { kind: "import", label: `Imported: ${name || doc.name}` });
-      notify("ok", `Imported ${doc.nodes.length.toLocaleString()} nodes and ${doc.edges.length.toLocaleString()} edges.`);
+      if (input.kind === "import") notify("ok", `Imported ${next.doc.nodes.length.toLocaleString()} nodes and ${next.doc.edges.length.toLocaleString()} edges.`);
       return null;
     } catch (e) {
-      return msg(e);
+      const message = msg(e);
+      if (sequence === loadSequence.current) {
+        setError(message);
+        setLoading(false);
+        notify("error", message);
+      }
+      return message;
     }
-  }, [loadDoc, notify]);
+  }, [resetView, notify]);
+
+  const cancelLoad = useCallback(() => {
+    loadSequence.current++;
+    background.current!.cancelLoad();
+    setLoading(false);
+    setError("Loading cancelled.");
+  }, []);
+  const loadSample = useCallback((kind: SampleKind, density: ScaleDensity = source.density ?? 2) => {
+    void startLoad({ kind: "sample", sample: kind, density }, sampleSource(kind, density));
+  }, [startLoad, source.density]);
+  const importText = useCallback((text: string | Blob, name: string) =>
+    startLoad({ kind: "import", text, name }, { kind: "import", label: name }), [startLoad]);
+
+  useEffect(() => {
+    const sample = sampleFromUrl();
+    void startLoad({ kind: "sample", sample: sample.kind, density: sample.density }, sampleSource(sample.kind, sample.density));
+    return () => {
+      loadSequence.current++;
+      background.current!.dispose();
+      clearTimeout(noticeTimer.current);
+    };
+  }, [startLoad]);
+
+  useEffect(() => {
+    if (!ws || !selected || !ws.index.nodes.has(selected)) {
+      setImpactState(null);
+      return background.current!.impact(null, () => {}, () => {});
+    }
+    setImpactState({ ws, root: selected });
+    return background.current!.impact(selected,
+      (result) => setImpactState({ ws, root: selected, result }),
+      (message) => setImpactState({ ws, root: selected, error: message }));
+  }, [ws, selected]);
+  const currentImpact = impactState?.ws === ws && impactState.root === selected ? impactState : null;
+  const impact = currentImpact?.result ?? null;
+  const impactError = currentImpact?.error ?? null;
+  const impactLoading = !!ws && !!selected && !impact && !impactError;
 
   const matches = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
@@ -184,13 +153,14 @@ export function useWorkbench() {
 
   const highlight = useMemo(() => {
     if (!ws || !selected || !ws.index.nodes.has(selected)) return null;
-    const depth = transitive ? undefined : 1;
     const m = new Map<string, Role>();
-    if (mode !== "dependents") for (const id of reachable(ws.index, selected, "dependencies", depth)) m.set(id, "dependency");
-    if (mode !== "dependencies") for (const id of reachable(ws.index, selected, "dependents", depth)) m.set(id, m.has(id) ? "both" : "dependent");
+    if (impact) {
+      if (mode !== "dependents") for (const id of transitive ? impact.dependencies : impact.directDependencies) m.set(id, "dependency");
+      if (mode !== "dependencies") for (const id of transitive ? impact.dependents : impact.directDependents) m.set(id, m.has(id) ? "both" : "dependent");
+    }
     m.set(selected, "root");
     return m;
-  }, [ws, selected, mode, transitive]);
+  }, [ws, selected, mode, transitive, impact]);
 
   const scene = useMemo<Scene | null>(() => {
     if (!ws) return null;
@@ -287,7 +257,7 @@ export function useWorkbench() {
   };
 
   return {
-    ws, error: built.error, source: loaded.source, loading, selected, setSelected, query, setQuery, hiddenKinds, toggleKind,
+    ws, error, source, loading, loadPhase, cancelLoad, impact, impactLoading, impactError, selected, setSelected, query, setQuery, hiddenKinds, toggleKind,
     clearKinds: () => { setHiddenKinds(new Set()); setCyclesOnly(false); },
     cyclesOnly, setCyclesOnly, mode, setMode, transitive, setTransitive, focus, visible, matches, highlight, scene,
      listNodes, fitTick, requestFit, focusNode, focusSelected, expandFocus, resetFocus, onDragEnd, togglePin, saveLayout, restoreSupplied,

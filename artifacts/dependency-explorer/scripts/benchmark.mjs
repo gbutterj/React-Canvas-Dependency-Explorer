@@ -20,6 +20,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 class CDP {
   next = 0;
   pending = new Map();
+  targets = new Map();
   async open(url) {
     this.ws = new WebSocket(url);
     await new Promise((resolve, reject) => {
@@ -28,7 +29,11 @@ class CDP {
     });
     this.ws.addEventListener("message", event => {
       const message = JSON.parse(event.data);
-      if (!message.id) return;
+      if (!message.id) {
+        if (message.method === "Target.attachedToTarget") this.targets.set(message.params.sessionId, message.params.targetInfo);
+        if (message.method === "Target.detachedFromTarget") this.targets.delete(message.params.sessionId);
+        return;
+      }
       const task = this.pending.get(message.id);
       if (!task) return;
       this.pending.delete(message.id); clearTimeout(task.timer);
@@ -41,12 +46,12 @@ class CDP {
     });
     return this;
   }
-  send(method, params = {}, timeout = 180000) {
+  send(method, params = {}, timeout = 180000, sessionId) {
     const id = ++this.next;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Timed out: ${method}`)); }, timeout);
       this.pending.set(id, { resolve, reject, timer });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      this.ws.send(JSON.stringify({ id, method, params, sessionId }));
     });
   }
   close() { this.ws?.close(); }
@@ -68,7 +73,7 @@ const results = {
 };
 async function save() {
   results.updatedAt = new Date().toISOString();
-  await writeFile(path.join(output, "results.json"), JSON.stringify(results, null, 2));
+  await writeFile(path.join(output, process.env.SETUP_ONLY ? "setup-results.json" : "results.json"), JSON.stringify(results, null, 2));
 }
 try {
   let port;
@@ -86,11 +91,25 @@ try {
   page = await new CDP().open(target.webSocketDebuggerUrl);
   await page.send("Page.enable");
   await page.send("Runtime.enable");
+  if (process.env.SETUP_ONLY) await page.send("Target.setAutoAttach", {
+    autoAttach: true, waitForDebuggerOnStart: false, flatten: true,
+  });
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1100, height: 850, deviceScaleFactor: 1, mobile: false });
   const url = process.env.BENCHMARK_URL || `https://${process.env.REPLIT_DEV_DOMAIN}/benchmark.html`;
   if (!process.env.BENCHMARK_URL && !process.env.REPLIT_DEV_DOMAIN) throw new Error("No preview domain or BENCHMARK_URL.");
-  for (const count of process.env.CHECKS_ONLY ? [] : [1000, 10000, 50000]) {
-    for (const degree of [2, 5, 20]) {
+  if (process.env.SETUP_ONLY) {
+    delete results.conditions.minimap;
+    delete results.conditions.icons;
+    delete results.conditions.panSamples;
+    delete results.conditions.zoomSamples;
+    delete results.conditions.dragSamples;
+    results.conditions.scope = "Actual graph background client/worker vs equivalent synchronous import + model + positions + spatial setup. No React panels or Canvas drawing.";
+    results.conditions.timing = "Three repetitions; total wall time, 16ms timer gaps and long-task observer during setup. Fixture generation/JSON serialization/Blob construction excluded. Sync consumes prepared JSON text; worker reads prepared file Blob. Impact measured separately.";
+    results.conditions.memory = "CDP live JS heaps after requested GC, separately main page and graph worker, with latest viewer retained. Includes dev modules and measurement overhead, not peak allocations or native browser memory. Staged replacement temporarily holds old+new graphs.";
+  }
+  for (const count of process.env.CHECKS_ONLY || process.env.BACKGROUND_CHECKS_ONLY ? [] : (process.env.COUNTS?.split(",").map(Number) || [1000, 10000, 50000])) {
+    for (const degree of (process.env.DEGREES?.split(",").map(Number) || [2, 5, 20])) {
+    for (const mode of process.env.SETUP_ONLY ? ["sync", "worker"] : ["renderer"]) {
       await page.send("Page.navigate", { url });
       let ready = false;
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -102,7 +121,8 @@ try {
       await page.send("HeapProfiler.collectGarbage");
       console.log(`Running ${count.toLocaleString()} nodes × ~${degree} outgoing edges…`);
       const response = await page.send("Runtime.evaluate", {
-        expression: `window.dependencyBenchmark.runCase(${count},${degree})`,
+        expression: mode === "renderer" ? `window.dependencyBenchmark.runCase(${count},${degree})`
+          : `window.dependencyBenchmark.runSetupCase(${count},${degree},${JSON.stringify(mode)})`,
         awaitPromise: true, returnByValue: true,
       });
       if (response.exceptionDetails) {
@@ -110,7 +130,19 @@ try {
       } else {
         const result = response.result.value;
         results.cases.push(result);
-        console.log(JSON.stringify({
+        if (mode !== "renderer") {
+          await page.send("HeapProfiler.collectGarbage");
+          const main = await page.send("Runtime.getHeapUsage");
+          const worker = [...page.targets].find(([, target]) => target.type === "worker");
+          let workerHeap = null;
+          if (worker) {
+            const [sessionId] = worker;
+            await page.send("HeapProfiler.collectGarbage", {}, 180000, sessionId);
+            workerHeap = await page.send("Runtime.getHeapUsage", {}, 180000, sessionId);
+          }
+          result.liveHeap = { main, worker: workerHeap };
+          console.log(JSON.stringify(result));
+        } else console.log(JSON.stringify({
           nodes: result.nodes, edges: result.edges,
           overviewDrawMedianMs: result.views.overview.panDrawMs.median,
           overviewRafMedianMs: result.views.overview.panRequestToRafMs.median,
@@ -120,6 +152,7 @@ try {
       }
       await save();
     }
+    }
   }
   await page.send("Page.navigate", { url });
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -128,14 +161,19 @@ try {
     await sleep(100);
   }
   const checks = await page.send("Runtime.evaluate", {
-    expression: "window.dependencyBenchmark.checkRenderer()", awaitPromise: true, returnByValue: true,
+    expression: process.env.SETUP_ONLY || process.env.BACKGROUND_CHECKS_ONLY ? "window.dependencyBenchmark.checkBackground()" : "window.dependencyBenchmark.checkRenderer()", awaitPromise: true, returnByValue: true,
   });
   if (checks.exceptionDetails) throw new Error(checks.exceptionDetails.exception?.description || checks.exceptionDetails.text);
-  console.log("Renderer regression checks:", JSON.stringify(checks.result.value));
-  results.rendererChecks = checks.result.value;
+  console.log("Regression checks:", JSON.stringify(checks.result.value));
+  if (process.env.SETUP_ONLY || process.env.BACKGROUND_CHECKS_ONLY) results.backgroundChecks = checks.result.value;
+  else results.rendererChecks = checks.result.value;
   results.finishedAt = new Date().toISOString();
-  if (!process.env.CHECKS_ONLY) await save();
-  console.log(`Results: ${path.relative(process.cwd(), output)}/results.json`);
+  if (!process.env.CHECKS_ONLY && !process.env.BACKGROUND_CHECKS_ONLY) await save();
+  if (!process.env.CHECKS_ONLY && !process.env.BACKGROUND_CHECKS_ONLY)
+    console.log(`Results: ${path.relative(process.cwd(), output)}/${process.env.SETUP_ONLY ? "setup-results.json" : "results.json"}`);
+} catch (error) {
+  console.error("Chromium diagnostic output:", stderr);
+  throw error;
 } finally {
   page?.close(); browser?.close(); chrome.kill("SIGTERM");
 }

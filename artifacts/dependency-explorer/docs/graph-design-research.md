@@ -71,7 +71,7 @@ Limits worth measuring before production:
 - An edge whose two endpoints are both outside the viewport is omitted even if it crosses the viewport.
 - Parallel edges are retained in the model but are not assigned individual curve lanes.
 - The list shows at most 300 matches; search is the access path for larger datasets.
-- SCC analysis, import parsing and full-graph traversals currently run on the main thread. Workers would be the next step for much larger or frequently changing graphs.
+- SCC analysis, import parsing/validation and selected-node direct/transitive impact now run in a typed worker. Bounded, acknowledged delivery preserves renderer access without another full worker-owned adjacency copy. Neighborhood focus, renderer rebuilds and several view/export operations remain synchronous; see [background processing measurements](background-processing.md).
 - Very dense graphs may require aggregation or a WebGL renderer. Canvas is a deliberate implementation choice, not a claim that it outscales WebGL.
 - External icons depend on their host being reachable and appropriate privacy policies. Failed images fall back to type icons.
 

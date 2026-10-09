@@ -187,9 +187,11 @@ async function runCase(count: number, degree: number) {
 }
 
 declare global {
-  interface Window { dependencyBenchmark: { runCase: typeof runCase; checkRenderer(): Promise<unknown>; ready: boolean } }
+  interface Window { dependencyBenchmark: { runCase: typeof runCase; runSetupCase: typeof import("./background-runner").runSetupCase; checkBackground(): Promise<unknown>; checkRenderer(): Promise<unknown>; ready: boolean } }
 }
 window.dependencyBenchmark = {
   runCase, ready: true,
+  runSetupCase: async (...args) => (await import("./background-runner")).runSetupCase(...args),
+  checkBackground: async () => (await import("./background-checks")).checkBackground(),
   checkRenderer: async () => (await import("./renderer-checks")).checkRenderer(),
 };

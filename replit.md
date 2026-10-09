@@ -17,11 +17,13 @@ A React/TypeScript workbench for understanding dependency relationships, cycles 
 - React, TypeScript, Vite, Tailwind and lucide-react
 - Custom Canvas 2D renderer, independent of React's per-node rendering
 - Pure TypeScript graph validation/traversal/component analysis
+- Typed module Web Worker for import, sample generation, SCC setup and selected-node impact; acknowledged batches keep renderer-facing setup incremental
 
 ## Where things live
 
 - `artifacts/dependency-explorer/README.md` — usage and import format
 - `artifacts/dependency-explorer/docs/graph-design-research.md` — research, complexity, sources and limits
+- `artifacts/dependency-explorer/docs/background-processing.md` — worker transaction/serialization design, setup benchmarks and remaining synchronous work
 - `artifacts/dependency-explorer/src/graph/` — authoritative graph contracts and algorithms
 - `artifacts/dependency-explorer/src/pages/workbench.tsx` — workbench interface
 - `artifacts/mockup-sandbox/src/components/mockups/dependency-explorer/` — isolated previews extracted from the real app

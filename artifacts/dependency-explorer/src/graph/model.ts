@@ -1,7 +1,7 @@
 import {
   EDGE_KINDS, NODE_KINDS,
   type DependencyEdge, type DependencyNode, type Direction,
-  type GraphDocument, type GraphIndex, type Point,
+  type GraphDocument, type GraphIndex, type GraphView, type Point,
 } from "./types";
 
 function object(value: unknown, at: string): Record<string, unknown> {
@@ -68,22 +68,27 @@ export function parseGraphDocument(input: unknown): GraphDocument {
     description: optionalText(raw.description, "description"), nodes, edges,
   };
   if (raw.view !== undefined) {
-    const view = object(raw.view, "view");
-    const positions = object(view.positions, "view.positions");
-    const normalized: Record<string, Point> = Object.create(null) as Record<string, Point>;
-    for (const [id, value] of Object.entries(positions)) {
-      if (!nodeIds.has(id)) throw new Error(`Position references missing node "${id}".`);
-      const point = object(value, `Position "${id}"`);
-      normalized[id] = { x: finite(point.x, `Position "${id}".x`), y: finite(point.y, `Position "${id}".y`) };
-    }
-    const pinned = view.pinned === undefined ? undefined : array(view.pinned, "view.pinned").map((value, i) => {
-      const id = text(value, `view.pinned[${i}]`);
-      if (!nodeIds.has(id)) throw new Error(`Pinned node "${id}" does not exist.`);
-      return id;
-    });
-    doc.view = { positions: normalized, pinned: pinned ? [...new Set(pinned)] : undefined };
+    doc.view = parseGraphView(raw.view, nodeIds);
   }
   return doc;
+}
+
+/** Validate saved view data without re-normalizing an already validated graph. */
+export function parseGraphView(input: unknown, nodeIds: Pick<ReadonlySet<string>, "has">): GraphView {
+  const view = object(input, "view");
+  const positions = object(view.positions, "view.positions");
+  const normalized: Record<string, Point> = Object.create(null) as Record<string, Point>;
+  for (const [id, value] of Object.entries(positions)) {
+    if (!nodeIds.has(id)) throw new Error(`Position references missing node "${id}".`);
+    const point = object(value, `Position "${id}"`);
+    normalized[id] = { x: finite(point.x, `Position "${id}".x`), y: finite(point.y, `Position "${id}".y`) };
+  }
+  const pinned = view.pinned === undefined ? undefined : array(view.pinned, "view.pinned").map((value, i) => {
+    const id = text(value, `view.pinned[${i}]`);
+    if (!nodeIds.has(id)) throw new Error(`Pinned node "${id}" does not exist.`);
+    return id;
+  });
+  return { positions: normalized, pinned: pinned ? [...new Set(pinned)] : undefined };
 }
 
 /** O(V+E) adjacency indexes; supports typed parallel edges and self loops. */

@@ -81,3 +81,11 @@ The `benchmark.html` developer entry imports the real model and renderer but doe
 Crowded views explicitly show **Reduced detail**: ordinary edges are sampled and ordinary nodes can share density cells. Highlights, hovered/selected incident edges, cycle indicators and pins retain individual treatment; the model and picking stay exact. Zoom in or focus to inspect relationships. Huge highlights and cold cache rebuilds can still be expensive.
 
 See [measured rendering performance](docs/renderer-performance.md) for the complete before/after matrix, caching rules, tradeoffs and regression-check commands.
+
+Imports, synthetic dataset generation, cycle analysis and selected-node impact now run in a typed Web Worker. A failed or cancelled import keeps the current graph and layout; stage labels and pending impact counts reflect real work. File input is read in the worker rather than copied into the text editor. Dataset and selection changes invalidate stale results.
+
+See [background processing and setup benchmarks](docs/background-processing.md) for cancellation/serialization design, total setup time, responsiveness, memory qualifications, regression commands and the work that still runs synchronously. To run the setup matrix without overwriting renderer results:
+
+```sh
+SETUP_ONLY=1 node artifacts/dependency-explorer/scripts/benchmark.mjs
+```

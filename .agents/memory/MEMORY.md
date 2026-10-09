@@ -1,2 +1,2 @@
-- [Measured scale limits](benchmark-lessons.md) — baseline benchmarks expose dense-overview and main-thread limits; qualify claims by viewport, density and software rendering.
+- [Measured scale limits](benchmark-lessons.md) — renderer/worker benchmarks separate responsiveness, total cost and memory; qualify claims by viewport, density and software rendering.
 - [Network exploration direction](network-exploration.md) — approved grouped overview and neighborhood drill-down; automated layout remains a separate enhancement.

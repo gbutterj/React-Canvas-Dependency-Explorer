@@ -3,7 +3,6 @@ import {
   AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Network, Share2, CircleHelp, Crosshair, Download, FileUp, Focus, ListTree, Pin, PinOff, PlusCircle,
   RotateCcw, Save, Search, SlidersHorizontal, Undo2, X,
 } from "lucide-react";
-import { neighbors, reachable } from "@/graph/model";
 import { NODE_KINDS, type NodeKind } from "@/graph/types";
 import { GraphCanvas, KindIcon, type CanvasHandle } from "@/components/graph-canvas";
 import { NetworkCanvas } from "@/components/network-canvas";
@@ -40,49 +39,60 @@ function Brand() {
   );
 }
 
-function ImportDialog({ onClose, onImport }: { onClose: () => void; onImport: (t: string, n: string) => string | null }) {
+function ImportDialog({ onClose, onImport, onCancel, phase }: {
+  onClose: () => void; onImport: (t: string | Blob, n: string) => Promise<string | null>;
+  onCancel: () => void; phase: string;
+}) {
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const attempt = useRef(0);
+  useEffect(() => () => { attempt.current++; }, []);
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const submit = () => {
-    if (!text.trim()) return setErr("Paste JSON or choose a file first.");
-    const e = onImport(text, name);
+  const close = () => { attempt.current++; if (busy) onCancel(); onClose(); };
+  const submit = async () => {
+    if (busy) return;
+    if (!file && !text.trim()) return setErr("Paste JSON or choose a file first.");
+    const request = ++attempt.current;
+    setBusy(true);
+    setErr(null);
+    const e = await onImport(file ?? text, name);
+    if (request !== attempt.current) return;
+    setBusy(false);
     if (e) setErr(e);
     else onClose();
   };
-  const onFile = async (f: File | undefined) => {
+  const onFile = (f: File | undefined) => {
     if (!f) return;
-    try {
-      setText(await f.text());
-      setName(f.name);
-      setErr(null);
-    } catch (e) {
-      setErr(`Could not read ${f.name}: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    setFile(f); setText(""); setName(f.name); setErr(null);
   };
   return (
-    <Modal title="Import graph JSON" onClose={onClose} wide>
+    <Modal title="Import graph JSON" onClose={close} wide>
       <p className="text-sm text-muted-foreground">
         Edges point from a source that depends on a target. Include <span className="mono">view.positions</span> for node placement; nodes without positions are put on a plain grid because layout is not computed here.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-sm hover:bg-muted">
           <FileUp size={14} /> Choose .json file
-          <input type="file" accept="application/json,.json" className="sr-only" data-testid="input-import-file" onChange={(e) => onFile(e.target.files?.[0])} />
+          <input disabled={busy} type="file" accept="application/json,.json" className="sr-only" data-testid="input-import-file" onChange={(e) => onFile(e.target.files?.[0])} />
         </label>
-        <button className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted" onClick={() => { setText(SAMPLE_JSON); setName("example.json"); setErr(null); }} data-testid="button-insert-example">
+        <button disabled={busy} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted" onClick={() => { setFile(null); setText(SAMPLE_JSON); setName("example.json"); setErr(null); }} data-testid="button-insert-example">
           Insert minimal example
         </button>
       </div>
+      {file && <p className="mt-3 text-sm">Selected: {file.name} ({file.size.toLocaleString()} bytes). File contents will be read in the background.</p>}
       <textarea
+        disabled={busy}
         value={text}
-        onChange={(e) => { setText(e.target.value); setErr(null); }}
+        onChange={(e) => { setFile(null); setText(e.target.value); setErr(null); }}
         spellCheck={false}
         aria-label="Graph JSON"
         placeholder="Paste a graph document here"
         className="mono mt-3 h-56 w-full resize-y rounded-md border border-input bg-background p-3 text-xs outline-none focus:ring-2 focus:ring-ring"
         data-testid="input-import-json"
       />
+      {busy && <p role="status" className="mt-3 text-sm">{phase}… The current graph remains loaded until this succeeds.</p>}
       {err && (
         <div role="alert" className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-destructive/40 bg-[hsl(350_70%_96%)] p-3 text-sm text-destructive" data-testid="error-import">
           <div className="mb-1 flex items-center gap-1.5 font-semibold"><AlertTriangle size={14} /> This file was not loaded</div>
@@ -90,8 +100,8 @@ function ImportDialog({ onClose, onImport }: { onClose: () => void; onImport: (t
         </div>
       )}
       <div className="mt-4 flex justify-end gap-2">
-        <button className="rounded-md px-3 py-1.5 text-sm hover:bg-muted" onClick={onClose}>Cancel</button>
-        <button className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90" onClick={submit} data-testid="button-submit-import">Validate and load</button>
+        <button className="rounded-md px-3 py-1.5 text-sm hover:bg-muted" onClick={close}>Cancel</button>
+        <button disabled={busy} className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50" onClick={submit} data-testid="button-submit-import">{busy ? "Loading…" : "Validate and load"}</button>
       </div>
     </Modal>
   );
@@ -161,14 +171,15 @@ export default function Workbench() {
   const node = ws && selected ? ws.index.nodes.get(selected) ?? null : null;
   const impact = useMemo(() => {
     if (!ws || !node) return null;
+    const idsToNodes = (ids: Set<string> | undefined) => [...ids ?? []].map((id) => ws.index.nodes.get(id)!);
     return {
-      deps: neighbors(ws.index, node.id, "dependencies"),
-      dpns: neighbors(ws.index, node.id, "dependents"),
-      tDeps: reachable(ws.index, node.id, "dependencies").size,
-      tDpns: reachable(ws.index, node.id, "dependents").size,
+      deps: idsToNodes(wb.impact?.directDependencies),
+      dpns: idsToNodes(wb.impact?.directDependents),
+      tDeps: wb.impact?.dependencies.size ?? "…",
+      tDpns: wb.impact?.dependents.size ?? "…",
       cycles: ws.analysis.cycles.filter((c) => c.includes(node.id)),
     };
-  }, [ws, node]);
+  }, [ws, node, wb.impact]);
 
   const pick = (id: string) => {
     wb.setSelected(id);
@@ -211,15 +222,16 @@ export default function Workbench() {
   if (!ws) {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center p-6">
-        <div role="alert" className="max-w-lg rounded-xl border border-destructive/40 bg-card p-6" data-testid="error-workspace">
-          <h1 className="text-lg font-semibold text-destructive">The graph could not be loaded</h1>
-          <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{wb.error ?? "Unknown error"}</p>
+        <div role={wb.loading ? "status" : "alert"} className="max-w-lg rounded-xl border border-border bg-card p-6" data-testid="error-workspace">
+          <h1 className="text-lg font-semibold">{wb.loading ? "Loading graph" : "The graph could not be loaded"}</h1>
+          <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{wb.loading ? `${wb.loadPhase}…` : wb.error ?? "Unknown error"}</p>
           <div className="mt-4 flex gap-2">
+            {wb.loading && <button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={wb.cancelLoad}>Cancel loading</button>}
             <button className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={() => wb.loadSample("demo")} data-testid="button-retry-demo">Retry with demo dataset</button>
             <button className="rounded-md border border-border px-3 py-1.5 text-sm" onClick={() => setDialog("import")}>Import JSON</button>
           </div>
         </div>
-        {dialog === "import" && <ImportDialog onClose={() => setDialog(null)} onImport={wb.importText} />}
+        {dialog === "import" && <ImportDialog onClose={() => setDialog(null)} onImport={wb.importText} onCancel={wb.cancelLoad} phase={wb.loadPhase} />}
       </div>
     );
   }
@@ -231,6 +243,8 @@ export default function Workbench() {
       const overlay = (
         <>
             <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2">
+              {wb.impactLoading && <span role="status" className="rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs shadow-md">Calculating impact…</span>}
+              {wb.impactError && <span role="alert" className="rounded-lg border border-destructive bg-card px-2.5 py-1.5 text-xs text-destructive shadow-md">{wb.impactError}</span>}
               <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Graph view">
                 {([["network", "Network", <Network key="n" size={13} />], ["flat", "Flat graph", <Share2 key="f" size={13} />]] as const).map(([v, l, ic]) => (
                   <button key={v} aria-pressed={view === v} onClick={() => setView(v)} data-testid={`button-view-${v}`}
@@ -346,7 +360,7 @@ export default function Workbench() {
               <option value="20" className="text-black">Dense · ~20 edges/node</option>
             </select>
           )}
-          {wb.loading && <span className="text-xs text-[hsl(42_20%_72%)]" role="status">Building dataset...</span>}
+          {wb.loading && <span className="text-xs text-[hsl(42_20%_72%)]" role="status">{wb.loadPhase}… <button className="underline" onClick={wb.cancelLoad}>Cancel</button></span>}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
            <button aria-label="Import graph JSON" onClick={() => setDialog("import")} className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs hover:bg-white/10" data-testid="button-import"><FileUp size={14} /><span className="hidden sm:inline">Import</span></button>
@@ -490,9 +504,11 @@ export default function Workbench() {
                 </div>
                 {node.description && <p className="text-sm text-muted-foreground">{node.description}</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-border bg-card p-3"><div className="mono text-2xl font-semibold text-[hsl(var(--dpn))]" data-testid="text-dependents-count">{impact.tDpns}</div><div className="text-xs text-muted-foreground">transitive dependents<br />({impact.dpns.length} direct)</div></div>
-                  <div className="rounded-lg border border-border bg-card p-3"><div className="mono text-2xl font-semibold text-[hsl(var(--dep))]" data-testid="text-dependencies-count">{impact.tDeps}</div><div className="text-xs text-muted-foreground">transitive dependencies<br />({impact.deps.length} direct)</div></div>
+                  <div className="rounded-lg border border-border bg-card p-3"><div className="mono text-2xl font-semibold text-[hsl(var(--dpn))]" data-testid="text-dependents-count">{impact.tDpns}</div><div className="text-xs text-muted-foreground">transitive dependents<br />({wb.impact ? impact.dpns.length : "…"} direct)</div></div>
+                  <div className="rounded-lg border border-border bg-card p-3"><div className="mono text-2xl font-semibold text-[hsl(var(--dep))]" data-testid="text-dependencies-count">{impact.tDeps}</div><div className="text-xs text-muted-foreground">transitive dependencies<br />({wb.impact ? impact.deps.length : "…"} direct)</div></div>
                 </div>
+                {wb.impactLoading && <p role="status" className="mt-2 text-xs text-muted-foreground">Calculating impact in the background…</p>}
+                {wb.impactError && <p role="alert" className="mt-2 text-sm text-destructive">{wb.impactError}</p>}
                 <dl className="mono grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                   {node.owner && (<><dt className="text-muted-foreground">owner</dt><dd>{node.owner}</dd></>)}
                   {node.version && (<><dt className="text-muted-foreground">version</dt><dd>{node.version}</dd></>)}
@@ -512,8 +528,8 @@ export default function Workbench() {
                 </div>
                 {([["Depends on", impact.deps, "dep"], ["Used by", impact.dpns, "dpn"]] as const).map(([title, list, c]) => (
                   <div key={title}>
-                    <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title} ({list.length})</h3>
-                    {list.length === 0 ? <p className="text-xs text-muted-foreground">None.</p> : (
+                    <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title} ({wb.impact ? list.length : "…"})</h3>
+                    {list.length === 0 ? <p className="text-xs text-muted-foreground">{wb.impactLoading ? "Calculating…" : wb.impactError ? "Unavailable" : "None."}</p> : (
                       <ul className="flex flex-wrap gap-1.5">
                         {list.slice(0, 40).map((n) => (
                           <li key={n.id}><button onClick={() => pick(n.id)} className="flex items-center gap-1.5 rounded-full border bg-card px-2 py-1 text-[11px] hover:bg-muted" style={{ borderColor: `hsl(var(--${c}) / .5)` }}><span className="h-2 w-2 rounded-full" style={{ background: KIND_COLOR[n.kind] }} />{n.label}</button></li>
@@ -570,7 +586,7 @@ export default function Workbench() {
           <button aria-label="Dismiss" onClick={wb.dismissNotice}><X size={14} /></button>
         </div>
       )}
-      {dialog === "import" && <ImportDialog onClose={() => setDialog(null)} onImport={wb.importText} />}
+      {dialog === "import" && <ImportDialog onClose={() => setDialog(null)} onImport={wb.importText} onCancel={wb.cancelLoad} phase={wb.loadPhase} />}
       {dialog === "help" && <HelpDialog onClose={() => setDialog(null)} />}
     </div>
   );

@@ -32,7 +32,7 @@ The complete report includes p95, draw timings, phase profiles, setup costs, mem
 - The notice is visible on small screens too. Stats distinguish in-view nodes, submitted marks, edge candidates and submitted edge paths; overlapping endpoints can skip paths even in full-detail mode.
 - Picking, hover cards, graph identity, filters, traversal, pins and exports use the complete model. Clicking a density cell picks an actual nearby node through the unchanged spatial index; no replacement graph nodes are created.
 - Translation-only pans reuse edge paths when the padded viewport's ID set is unchanged. Zoom, drag and scene updates invalidate geometry as appropriate. The minimap caches its static bitmap and overlays the moving node while dragging; bounds are recomputed on release. Filters, highlight changes, restored positions, resize and DPR changes rebuild the bitmap. Cold rebuilds still scan the graph; those costs are not covered by warm-pan medians.
-- Import and analysis remain synchronous and are a separate scope of work. No force layout, graph truncation or graph-model replacement was introduced.
+- Import and analysis were synchronous at the time of this renderer comparison. They now have a separate [background-processing pipeline and setup benchmark](background-processing.md). No force layout, graph truncation or graph-model replacement was introduced.
 
 ## Reproduction and checks
 
