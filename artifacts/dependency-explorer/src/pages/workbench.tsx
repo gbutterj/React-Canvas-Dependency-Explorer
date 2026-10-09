@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
-  AlertTriangle, ChevronDown, CircleHelp, Crosshair, Download, FileUp, Focus, ListTree, Pin, PinOff, PlusCircle,
+  AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Network, Share2, CircleHelp, Crosshair, Download, FileUp, Focus, ListTree, Pin, PinOff, PlusCircle,
   RotateCcw, Save, Search, SlidersHorizontal, Undo2, X,
 } from "lucide-react";
 import { neighbors, reachable } from "@/graph/model";
 import { NODE_KINDS, type NodeKind } from "@/graph/types";
 import { GraphCanvas, KindIcon, type CanvasHandle } from "@/components/graph-canvas";
+import { NetworkCanvas } from "@/components/network-canvas";
+import { PAGE_SIZE, aggregate, buildGroupModel, drillMembers, emphasis, MAX_LINKS } from "@/graph/network";
 import { Modal } from "@/components/modal";
 import { useWorkbench, type Mode } from "@/hooks/use-workbench";
 import { KIND_COLOR, KIND_LABEL, cx } from "@/lib/node-style";
@@ -105,6 +107,8 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
           <p className="text-sm text-muted-foreground">An arrow runs from the thing that depends to the thing it depends on. Select a node: <b className="text-[hsl(var(--dep))]">teal</b> nodes are its dependencies (what it needs), <b className="text-[hsl(var(--dpn))]">amber</b> nodes are its dependents (what breaks if it changes). Dashed crimson rings mark nodes in a cycle, from a strongly-connected-component analysis.</p>
           <h3 className="mb-2 mt-4 text-sm font-semibold">Layout</h3>
           <p className="text-sm text-muted-foreground">No layout engine runs. Nodes sit at the positions supplied in the data, or where you drag them. Pinned nodes cannot be dragged. Saving stores positions in this browser only. A layout adapter interface exists for a future algorithm to plug in.</p>
+          <h3 className="mb-2 mt-4 text-sm font-semibold">Network view</h3>
+          <p className="text-sm text-muted-foreground">Network groups nodes by owner (nodes without one go to "Unassigned"). An arrow between groups aggregates every edge from one group to another, and its number is the exact edge count; each direction is its own arrow and edges inside a group are not drawn as links. At most 700 group links are drawn, plus all links on the selected node's neighborhood; the rest stay counted. Double-click a group to open it: up to 120 nodes per page, or only the selected neighborhood. Drag groups or nodes to rearrange them; this is presentation-only, lasts for the session, and never alters flat positions, saving or export. Pinned nodes (marked with a dark dot) cannot be dragged, and pin state is saved. Use Flat graph to compare against the unaggregated graph.</p>
           <h3 className="mb-2 mt-4 text-sm font-semibold">Datasets</h3>
           <p className="text-sm text-muted-foreground">The demo and the 1,000 / 10,000 / 50,000-node scale graphs are synthetic. Choose 2, 5, or 20 dependencies per node to explore all nine benchmark cases. Counts are computed from the loaded data. Scale graphs use supplied grid positions, not a force layout; dense overviews may render slowly.</p>
         </section>
@@ -135,9 +139,24 @@ export default function Workbench() {
   const [panel, setPanel] = useState<null | "list" | "details">(null);
   const [dialog, setDialog] = useState<null | "import" | "help">(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const net = useRef<CanvasHandle>(null);
+  const [view, setView] = useState<"network" | "flat">("network");
+  const [drill, setDrill] = useState<number | null>(null);
+  const [pageIdx, setPageIdx] = useState(0);
+  const [neighOnly, setNeighOnly] = useState(false);
   const { ws, selected } = wb;
+  const cv = () => (view === "network" ? net.current : canvas.current);
 
-  useEffect(() => { canvas.current?.fit(null); }, [ws, wb.fitTick]);
+  const model = useMemo(() => (ws ? buildGroupModel(ws.doc.nodes, ws.original, ws.analysis.cycleNodeIds) : null), [ws]);
+  const agg = useMemo(() => (ws && model && view === "network" ? aggregate(ws.index, model, wb.visible) : null), [ws, model, view, wb.visible]);
+  const emph = useMemo(() => (ws && model && view === "network" ? emphasis(ws.index, model, wb.highlight) : null), [ws, model, view, wb.highlight]);
+  const members = useMemo(() => (ws && model && drill !== null ? drillMembers(model, drill, ws.index, wb.visible, wb.highlight, neighOnly) : []), [ws, model, drill, wb.visible, wb.highlight, neighOnly]);
+  const pages = Math.max(1, Math.ceil(members.length / PAGE_SIZE));
+  const curPage = Math.min(pageIdx, pages - 1);
+  const openGroup = (g: number | null) => { setDrill(g); setPageIdx(0); setNeighOnly(false); };
+
+  useEffect(() => { setDrill(null); setPageIdx(0); }, [ws]);
+  useEffect(() => { const t = window.setTimeout(() => cv()?.fit(null), 0); return () => clearTimeout(t); }, [ws, wb.fitTick, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const node = ws && selected ? ws.index.nodes.get(selected) ?? null : null;
   const impact = useMemo(() => {
@@ -151,7 +170,18 @@ export default function Workbench() {
     };
   }, [ws, node]);
 
-  const pick = (id: string) => { wb.setSelected(id); canvas.current?.centerOn(id); };
+  const pick = (id: string) => {
+    wb.setSelected(id);
+    if (view === "network" && ws && model) {
+      const g = model.groupOf.get(id);
+      if (g !== undefined) {
+        const mem = drillMembers(model, g, ws.index, wb.visible, wb.highlight, false);
+        const at = mem.indexOf(id);
+        setDrill(g); setNeighOnly(false); setPageIdx(at < 0 ? 0 : Math.floor(at / PAGE_SIZE));
+      }
+    }
+    setTimeout(() => cv()?.centerOn(id), 0);
+  };
   const onListKey = (e: KeyboardEvent<HTMLUListElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
@@ -197,6 +227,81 @@ export default function Workbench() {
   const total = ws.doc.nodes.length;
   const shown = wb.visible ? wb.visible.size : total;
   const filtersActive = wb.hiddenKinds.size > 0 || wb.cyclesOnly || !!wb.focus || !!wb.query;
+
+      const overlay = (
+        <>
+            <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2">
+              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Graph view">
+                {([["network", "Network", <Network key="n" size={13} />], ["flat", "Flat graph", <Share2 key="f" size={13} />]] as const).map(([v, l, ic]) => (
+                  <button key={v} aria-pressed={view === v} onClick={() => setView(v)} data-testid={`button-view-${v}`}
+                    className={cx("flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium", view === v ? "bg-[hsl(var(--ink))] text-[hsl(42_30%_95%)]" : "hover:bg-muted")}>{ic}{l}</button>
+                ))}
+              </div>
+              {view === "network" && model && (
+                <div className="pointer-events-auto flex flex-wrap items-center overflow-hidden rounded-lg border border-border bg-card text-xs shadow-md" aria-label="Group navigation" data-testid="bar-breadcrumb">
+                  <button onClick={() => openGroup(null)} disabled={drill === null} className="px-2.5 py-1.5 font-medium hover:bg-muted disabled:font-semibold" data-testid="button-overview">All groups ({model.groups.length.toLocaleString()})</button>
+                  {drill !== null && model.groups[drill] && (
+                    <>
+                      <span className="px-1 text-muted-foreground" aria-hidden>/</span>
+                      <span className="max-w-[160px] truncate px-1.5 py-1.5 font-semibold" data-testid="text-drill-label">{model.groups[drill]!.label}</span>
+                      <button aria-label="Previous page" disabled={curPage === 0} onClick={() => setPageIdx(curPage - 1)} className="border-l border-border px-1.5 py-1.5 hover:bg-muted disabled:opacity-40" data-testid="button-page-prev"><ChevronLeft size={13} /></button>
+                      <span className="mono px-1.5 text-[10.5px]" data-testid="text-page">{members.length === 0 ? "0 nodes" : `${(curPage * PAGE_SIZE + 1).toLocaleString()}-${Math.min(members.length, (curPage + 1) * PAGE_SIZE).toLocaleString()} of ${members.length.toLocaleString()}`}</span>
+                      <button aria-label="Next page" disabled={curPage >= pages - 1} onClick={() => setPageIdx(curPage + 1)} className="border-l border-border px-1.5 py-1.5 hover:bg-muted disabled:opacity-40" data-testid="button-page-next"><ChevronRight size={13} /></button>
+                      <label className={cx("flex cursor-pointer items-center gap-1.5 border-l border-border px-2.5 py-1.5", !selected && "opacity-40")}>
+                        <input type="checkbox" disabled={!selected} checked={neighOnly} onChange={(e) => { setNeighOnly(e.target.checked); setPageIdx(0); }} data-testid="checkbox-neigh-only" />Selected neighborhood only
+                      </label>
+                    </>
+                  )}
+                </div>
+              )}
+              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Highlight direction">
+                {modeBtn("both", "Both", "hsl(205 40% 25%)")}
+                {modeBtn("dependencies", "Dependencies", "#14876a")}
+                {modeBtn("dependents", "Dependents", "#d98a0b")}
+              </div>
+              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Depth">
+                {[{ t: false, l: "1 hop" }, { t: true, l: "Transitive" }].map((o) => (
+                  <button key={o.l} aria-pressed={wb.transitive === o.t} onClick={() => wb.setTransitive(o.t)} data-testid={`button-depth-${o.t ? "all" : "1"}`}
+                    className={cx("px-2.5 py-1.5 text-xs font-medium", wb.transitive === o.t ? "bg-[hsl(var(--ink))] text-[hsl(42_30%_95%)]" : "hover:bg-muted")}>{o.l}</button>
+                ))}
+              </div>
+              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md">
+                <button disabled={!selected} onClick={wb.focusSelected} data-testid="button-focus" className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-40"><Focus size={13} />Focus</button>
+                <button disabled={!wb.focus} onClick={wb.expandFocus} data-testid="button-expand" className="flex items-center gap-1.5 border-l border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-40"><PlusCircle size={13} />Expand{wb.focus ? ` (${wb.focus.depth} hop${wb.focus.depth > 1 ? "s" : ""})` : ""}</button>
+                <button onClick={wb.resetFocus} data-testid="button-reset" className="flex items-center gap-1.5 border-l border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"><RotateCcw size={13} />Reset</button>
+              </div>
+            </div>
+            {shown === 0 && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6" data-testid="empty-canvas">
+                <div className="max-w-sm rounded-xl border border-dashed border-border bg-card/95 p-6 text-center">
+                  <SlidersHorizontal className="mx-auto mb-2 text-muted-foreground" />
+                  <p className="font-semibold">{total === 0 ? "This graph has no nodes" : "Nothing visible with these filters"}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{total === 0 ? "Import a graph document to begin." : "Type filters, cycles-only or focus hid every node."}</p>
+                  <button className="mt-3 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={total === 0 ? () => setDialog("import") : wb.resetFocus}>{total === 0 ? "Import JSON" : "Reset view"}</button>
+                </div>
+              </div>
+            )}
+            {/* mobile controls and touch fallback for hover details */}
+            <div className="absolute inset-x-3 bottom-[7.5rem] z-10 flex flex-col gap-2 sm:bottom-3 sm:right-auto md:hidden lg:hidden">
+              {node && panel === null && (
+                <button onClick={() => setPanel("details")} className="panel-in flex items-center gap-2.5 rounded-lg border border-border bg-card p-2.5 text-left shadow-lg" data-testid="bar-selection">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-white" style={{ background: KIND_COLOR[node.kind] }}><KindIcon kind={node.kind} size={15} /></span>
+                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{node.label}</span><span className="block truncate text-xs text-muted-foreground">{KIND_LABEL[node.kind]}{node.owner ? ` / ${node.owner}` : ""}{node.version ? ` / ${node.version}` : ""}</span></span>
+                  <span className="text-xs text-primary">Details</span>
+                </button>
+              )}
+            </div>
+             <div className="absolute bottom-3 left-3 z-10 flex gap-2 lg:hidden sm:bottom-14">
+               <button onClick={() => setPanel("list")} className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium shadow-md md:hidden" data-testid="button-open-list"><ListTree size={14} />Nodes</button>
+              <button onClick={() => setPanel("details")} className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium shadow-md lg:hidden" data-testid="button-open-details"><Crosshair size={14} />Details</button>
+            </div>
+             <div className="pointer-events-none absolute bottom-14 left-3 z-10 hidden items-center gap-3 rounded-full border border-border bg-card/90 px-3 py-1.5 text-[11px] backdrop-blur lg:flex">
+              <span className="flex items-center gap-1.5"><i className="h-0.5 w-5 rounded bg-[#14876a]" />dependencies</span>
+              <span className="flex items-center gap-1.5"><i className="h-0.5 w-5 rounded bg-[#d98a0b]" />dependents</span>
+              <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full border-2 border-dashed border-[#c0203f]" />cycle</span>
+            </div>
+        </>
+      );
 
   return (
     <div className="flex h-[100dvh] flex-col bg-background text-foreground">
@@ -269,6 +374,21 @@ export default function Workbench() {
         </div>
       )}
 
+      {view === "network" && model && agg && (
+        <details className="shrink-0 border-b border-border bg-secondary px-4 py-1.5 text-xs text-muted-foreground" data-testid="note-network">
+          <summary className="cursor-pointer">
+            <b className="text-foreground">Grouped network</b> · {model.groups.length.toLocaleString()} owner groups · {agg.cross.toLocaleString()} cross-group edges · Session-only arrangement
+            {agg.pairs.length > MAX_LINKS && ` · Link detail limited`}
+          </summary>
+          <p className="mt-2 max-h-36 overflow-y-auto leading-relaxed">
+          Nodes grouped by owner{model.unassigned > 0 ? ` (${model.unassigned.toLocaleString()} with no owner are in "Unassigned")` : ""}: {model.groups.length.toLocaleString()} groups.
+          {" "}Each arrow aggregates every edge from one group to another (source depends on target); its number is the exact edge count, and the reverse direction is a separate arrow.
+          {" "}{agg.internalTotal.toLocaleString()} edges stay inside groups and {agg.cross.toLocaleString()} cross groups across {agg.pairs.length.toLocaleString()} directed links
+          {agg.pairs.length > MAX_LINKS ? `; only the strongest ${MAX_LINKS} are drawn (others stay counted, and links on the selected node's neighborhood always draw)` : ""}.
+          {" "}Network positions are presentation-only ({model.layout === "grid" ? "groups placed on a plain grid" : "supplied coordinates clustered by owner"}); no force layout runs. Dragging groups or nodes here rearranges this session only: it is not saved, not exported, and never changes flat-graph coordinates. Pinned nodes stay locked.
+          </p>
+        </details>
+      )}
       {(ws.storageWarning || wb.persistError || ws.gridPlaced > 0) && (
         <div className="shrink-0 space-y-px text-xs">
           {ws.storageWarning && <div role="alert" className="bg-[hsl(38_80%_89%)] px-4 py-1.5 text-[hsl(30_70%_20%)]" data-testid="warning-storage">{ws.storageWarning}</div>}
@@ -344,55 +464,11 @@ export default function Workbench() {
 
         {/* center: canvas */}
         <main className="relative min-w-0 flex-1">
-           <GraphCanvas ref={canvas} scene={wb.scene} onSelect={wb.setSelected} onActivate={wb.focusNode} onDragEnd={wb.onDragEnd} onClear={() => wb.setSelected(null)}>
-            <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2">
-              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Highlight direction">
-                {modeBtn("both", "Both", "hsl(205 40% 25%)")}
-                {modeBtn("dependencies", "Dependencies", "#14876a")}
-                {modeBtn("dependents", "Dependents", "#d98a0b")}
-              </div>
-              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md" role="group" aria-label="Depth">
-                {[{ t: false, l: "1 hop" }, { t: true, l: "Transitive" }].map((o) => (
-                  <button key={o.l} aria-pressed={wb.transitive === o.t} onClick={() => wb.setTransitive(o.t)} data-testid={`button-depth-${o.t ? "all" : "1"}`}
-                    className={cx("px-2.5 py-1.5 text-xs font-medium", wb.transitive === o.t ? "bg-[hsl(var(--ink))] text-[hsl(42_30%_95%)]" : "hover:bg-muted")}>{o.l}</button>
-                ))}
-              </div>
-              <div className="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-card shadow-md">
-                <button disabled={!selected} onClick={wb.focusSelected} data-testid="button-focus" className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-40"><Focus size={13} />Focus</button>
-                <button disabled={!wb.focus} onClick={wb.expandFocus} data-testid="button-expand" className="flex items-center gap-1.5 border-l border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-40"><PlusCircle size={13} />Expand{wb.focus ? ` (${wb.focus.depth} hop${wb.focus.depth > 1 ? "s" : ""})` : ""}</button>
-                <button onClick={wb.resetFocus} data-testid="button-reset" className="flex items-center gap-1.5 border-l border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"><RotateCcw size={13} />Reset</button>
-              </div>
-            </div>
-            {shown === 0 && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center p-6" data-testid="empty-canvas">
-                <div className="max-w-sm rounded-xl border border-dashed border-border bg-card/95 p-6 text-center">
-                  <SlidersHorizontal className="mx-auto mb-2 text-muted-foreground" />
-                  <p className="font-semibold">{total === 0 ? "This graph has no nodes" : "Nothing visible with these filters"}</p>
-                  <p className="mt-1 text-sm text-muted-foreground">{total === 0 ? "Import a graph document to begin." : "Type filters, cycles-only or focus hid every node."}</p>
-                  <button className="mt-3 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={total === 0 ? () => setDialog("import") : wb.resetFocus}>{total === 0 ? "Import JSON" : "Reset view"}</button>
-                </div>
-              </div>
-            )}
-            {/* mobile controls and touch fallback for hover details */}
-            <div className="absolute inset-x-3 bottom-[7.5rem] z-10 flex flex-col gap-2 sm:bottom-3 sm:right-auto md:hidden lg:hidden">
-              {node && panel === null && (
-                <button onClick={() => setPanel("details")} className="panel-in flex items-center gap-2.5 rounded-lg border border-border bg-card p-2.5 text-left shadow-lg" data-testid="bar-selection">
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-white" style={{ background: KIND_COLOR[node.kind] }}><KindIcon kind={node.kind} size={15} /></span>
-                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{node.label}</span><span className="block truncate text-xs text-muted-foreground">{KIND_LABEL[node.kind]}{node.owner ? ` / ${node.owner}` : ""}{node.version ? ` / ${node.version}` : ""}</span></span>
-                  <span className="text-xs text-primary">Details</span>
-                </button>
-              )}
-            </div>
-             <div className="absolute bottom-3 left-3 z-10 flex gap-2 lg:hidden sm:bottom-14">
-               <button onClick={() => setPanel("list")} className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium shadow-md md:hidden" data-testid="button-open-list"><ListTree size={14} />Nodes</button>
-              <button onClick={() => setPanel("details")} className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium shadow-md lg:hidden" data-testid="button-open-details"><Crosshair size={14} />Details</button>
-            </div>
-             <div className="pointer-events-none absolute bottom-14 left-3 z-10 hidden items-center gap-3 rounded-full border border-border bg-card/90 px-3 py-1.5 text-[11px] backdrop-blur lg:flex">
-              <span className="flex items-center gap-1.5"><i className="h-0.5 w-5 rounded bg-[#14876a]" />dependencies</span>
-              <span className="flex items-center gap-1.5"><i className="h-0.5 w-5 rounded bg-[#d98a0b]" />dependents</span>
-              <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full border-2 border-dashed border-[#c0203f]" />cycle</span>
-            </div>
-          </GraphCanvas>
+           {view === "flat" ? (
+            <GraphCanvas ref={canvas} scene={wb.scene} onSelect={wb.setSelected} onActivate={wb.focusNode} onDragEnd={wb.onDragEnd} onClear={() => wb.setSelected(null)}>{overlay}</GraphCanvas>
+           ) : (
+            <NetworkCanvas ref={net} scene={wb.scene} model={model!} agg={agg!} emph={emph} drill={drill} members={members} page={pageIdx} onDrill={openGroup} onSelect={wb.setSelected} onActivate={wb.focusNode} onClear={() => wb.setSelected(null)}>{overlay}</NetworkCanvas>
+           )}
         </main>
 
         {/* right: details */}
@@ -426,13 +502,13 @@ export default function Workbench() {
                 {impact.cycles.length > 0 && (
                   <div className="rounded-lg border border-[hsl(var(--cyc)/.4)] bg-[hsl(350_70%_96%)] p-3 text-xs" data-testid="panel-cycles">
                     <div className="mb-1 font-semibold text-[hsl(var(--cyc))]">In a dependency cycle (strongly connected group)</div>
-                    {impact.cycles.map((c, i) => (<button key={i} className="block text-left underline-offset-2 hover:underline" onClick={() => canvas.current?.fit(c)}>{c.map((id) => ws.index.nodes.get(id)?.label ?? id).join(", ")}</button>))}
+                    {impact.cycles.map((c, i) => (<button key={i} className="block text-left underline-offset-2 hover:underline" onClick={() => cv()?.fit(c)}>{c.map((id) => ws.index.nodes.get(id)?.label ?? id).join(", ")}</button>))}
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
                   <button className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground" onClick={wb.focusSelected} data-testid="button-details-focus"><Focus size={13} />Focus neighborhood</button>
                   <button className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted" onClick={() => wb.togglePin(node.id)} data-testid="button-pin">{ws.pinned.has(node.id) ? <PinOff size={13} /> : <Pin size={13} />}{ws.pinned.has(node.id) ? "Unpin" : "Pin position"}</button>
-                  <button className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted" onClick={() => canvas.current?.centerOn(node.id)}><Crosshair size={13} />Center</button>
+                  <button className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted" onClick={() => cv()?.centerOn(node.id)}><Crosshair size={13} />Center</button>
                 </div>
                 {([["Depends on", impact.deps, "dep"], ["Used by", impact.dpns, "dpn"]] as const).map(([title, list, c]) => (
                   <div key={title}>
@@ -468,7 +544,7 @@ export default function Workbench() {
                   {ws.analysis.cycles.length === 0 ? <p className="text-sm text-muted-foreground">No cycles found in this graph.</p> : (
                     <ul className="space-y-1.5">
                       {ws.analysis.cycles.slice(0, 25).map((c, i) => (
-                        <li key={i}><button className="w-full rounded-md border border-[hsl(var(--cyc)/.35)] bg-card px-2.5 py-1.5 text-left text-xs hover:bg-muted" onClick={() => { wb.setSelected(c[0]); canvas.current?.fit(c); }} data-testid={`button-cycle-${i}`}>
+                        <li key={i}><button className="w-full rounded-md border border-[hsl(var(--cyc)/.35)] bg-card px-2.5 py-1.5 text-left text-xs hover:bg-muted" onClick={() => { wb.setSelected(c[0]); cv()?.fit(c); }} data-testid={`button-cycle-${i}`}>
                           <span className="font-semibold text-[hsl(var(--cyc))]">{c.length === 1 ? "Self-loop" : `${c.length} nodes`}</span> {c.slice(0, 4).map((id) => ws.index.nodes.get(id)?.label ?? id).join(", ")}{c.length > 4 ? ", ..." : ""}
                         </button></li>
                       ))}
@@ -483,7 +559,7 @@ export default function Workbench() {
               <button onClick={wb.saveLayout} className={cx("flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium", wb.dirty ? "bg-primary text-primary-foreground" : "border border-border hover:bg-muted")} data-testid="button-save-layout"><Save size={13} />{wb.dirty ? "Save layout (unsaved)" : "Save layout"}</button>
               <button onClick={wb.restoreSupplied} title="Restore supplied positions and clear saved layout" aria-label="Restore supplied positions" className="rounded-md border border-border p-2 hover:bg-muted" data-testid="button-restore-layout"><Undo2 size={14} /></button>
             </div>
-            <p className="mt-1.5 text-[10.5px] text-muted-foreground">Saved to this browser only. {ws.moved.size} moved, {ws.pinned.size} pinned.</p>
+            <p className="mt-1.5 text-[10.5px] text-muted-foreground">Saved to this browser only. {ws.moved.size} moved, {ws.pinned.size} pinned. Save and export keep the flat-graph coordinates and pins; network-view arrangement is session-only and is not included.</p>
           </div>
         </aside>
       </div>
