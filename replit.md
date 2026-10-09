@@ -1,44 +1,51 @@
-# [Project name]
+# Dependency Explorer
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A React/TypeScript workbench for understanding dependency relationships, cycles and possible change impact using a custom Canvas viewer.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/dependency-explorer run dev` — run the web workbench (managed workflow supplies PORT and BASE_PATH)
+- `pnpm --filter @workspace/mockup-sandbox run dev` — run isolated canvas design previews
+- `pnpm --filter @workspace/dependency-explorer exec tsc --noEmit` — typecheck the workbench
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- The workbench does not need an API server, database or secrets. The monorepo's API/database packages are unused scaffolds.
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- React, TypeScript, Vite, Tailwind and lucide-react
+- Custom Canvas 2D renderer, independent of React's per-node rendering
+- Pure TypeScript graph validation/traversal/component analysis
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/dependency-explorer/README.md` — usage and import format
+- `artifacts/dependency-explorer/docs/graph-design-research.md` — research, complexity, sources and limits
+- `artifacts/dependency-explorer/src/graph/` — authoritative graph contracts and algorithms
+- `artifacts/dependency-explorer/src/pages/workbench.tsx` — workbench interface
+- `artifacts/mockup-sandbox/src/components/mockups/dependency-explorer/` — isolated previews extracted from the real app
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Source depends on target. Incoming traversal represents possible downstream impact, not a guarantee of breakage.
+- Cyclic groups mean strongly connected regions, not enumeration of every simple cycle.
+- Domain identities and relationships are separate from view positions and pins.
+- Layout is deliberately separate: supplied coordinates/manual dragging now, a layout adapter for future algorithms.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Search, type/cycle filters, direct/transitive dependency highlighting, progressive neighborhood focus, hover metadata, touch details, node dragging/pinning, minimap, JSON import/export and browser-local layout saving.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+The user wants a React-native web architecture and custom Canvas dependency viewer for potentially tens of thousands of nodes, each with an icon and hover card. Focus on graph design/data model; layout is a separate issue. Show design progress on the canvas.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Demo and stress datasets are synthetic and must remain labeled. The 10,000-node dataset is not a measured performance guarantee.
+- Browser-local layout saves are not shared persistence. Export JSON to transfer graph data and coordinates.
+- Do not iframe the main app on the canvas; use extracted sandbox preview components.
 
 ## Pointers
 

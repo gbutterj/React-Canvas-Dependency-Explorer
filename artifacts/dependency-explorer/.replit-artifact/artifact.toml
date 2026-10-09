@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Dependency Explorer"
+description = "A React and TypeScript dependency analysis workbench with a custom Canvas graph, scalable directed graph data model, icons, hover details, and layout-independent interaction."
+version = "1.0.0"
+id = "artifacts/dependency-explorer"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18439
+
+[services.development]
+run = "pnpm --filter @workspace/dependency-explorer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/dependency-explorer", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/dependency-explorer/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18439"
+BASE_PATH = "/"
