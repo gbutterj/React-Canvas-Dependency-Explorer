@@ -14,3 +14,45 @@ mtime_ms = 1791585817935
 storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/acb7e036-9275-4c9f-b13b-83ca861eb5c7/389cfbc3-e06a-4714-9469-3e5be1603005"
 storage_version_token = "1791585875044020"
 content_type = "text/html"
+
+[[outputs]]
+id = "OvFlMQYLlYdwdDFoOXPwR"
+uri = "file://generated-artifacts/graph-benchmarks/scale-1000.chart.html"
+type = "text"
+title = "Dense views slow down at 1,000 nodes"
+description = "Measured median pan/redraw latency at 1,000 nodes across three edge densities. Full overview versus zoomed-in view; independent zero-based axis. Software-rendered benchmark, not FPS."
+logical_id = "c261e8e2-219d-40a2-9788-b80d9cb6eec3"
+content_hash = "sha256:36681662ba3392a05a019bdc4168f0e221828a0c7f55d26f2c5371b5fbb37202"
+size = 4090
+mtime_ms = 1791586423972
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/c261e8e2-219d-40a2-9788-b80d9cb6eec3/02c006b5-3495-4453-a61c-f98543206010"
+storage_version_token = "1791586424372134"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "skSVrrBDV2MfKfxu-A9le"
+uri = "file://generated-artifacts/graph-benchmarks/scale-10000.chart.html"
+type = "text"
+title = "Zoomed views stay faster at 10,000 nodes"
+description = "Measured median pan/redraw latency at 10,000 nodes across three edge densities. Full overview versus zoomed-in view; independent zero-based axis. Software-rendered benchmark, not FPS."
+logical_id = "49c008c6-8f2f-4662-b8c6-2591d8af1099"
+content_hash = "sha256:4b385f3a9b7c16ea02a29a497f4e8c68df15c1c65010fba269cdbda46bc4ca48"
+size = 4100
+mtime_ms = 1791586425848
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/49c008c6-8f2f-4662-b8c6-2591d8af1099/a4c16705-289b-4e56-acb6-7a93562cdb3b"
+storage_version_token = "1791586426080339"
+content_type = "text/html;profile=replit-chart"
+
+[[outputs]]
+id = "RP9XzteHfjCmxAa7SbdjJ"
+uri = "file://generated-artifacts/graph-benchmarks/scale-50000.chart.html"
+type = "text"
+title = "Dense overviews stall at 50,000 nodes"
+description = "Measured median pan/redraw latency at 50,000 nodes across three edge densities. Full overview versus zoomed-in view; independent zero-based axis. Software-rendered benchmark, not FPS."
+logical_id = "1d26bb34-1f8b-4995-a7a9-7185f3f25a20"
+content_hash = "sha256:01711e531cfc69cd2f3c3f11eaa303e3b67719ab135e5b7a546bc9b8c8565773"
+size = 4096
+mtime_ms = 1791586427324
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/1d26bb34-1f8b-4995-a7a9-7185f3f25a20/37a2dce7-79a8-4a1f-8ec1-b8e562c4a486"
+storage_version_token = "1791586427562636"
+content_type = "text/html;profile=replit-chart"
