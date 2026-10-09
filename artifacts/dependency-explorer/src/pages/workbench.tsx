@@ -106,7 +106,7 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
           <h3 className="mb-2 mt-4 text-sm font-semibold">Layout</h3>
           <p className="text-sm text-muted-foreground">No layout engine runs. Nodes sit at the positions supplied in the data, or where you drag them. Pinned nodes cannot be dragged. Saving stores positions in this browser only. A layout adapter interface exists for a future algorithm to plug in.</p>
           <h3 className="mb-2 mt-4 text-sm font-semibold">Datasets</h3>
-          <p className="text-sm text-muted-foreground">The demo and the 10,000-node stress set are synthetic. Counts shown are computed from the loaded data; the stress set is a stress test, not a performance claim.</p>
+          <p className="text-sm text-muted-foreground">The demo and the 1,000 / 10,000 / 50,000-node scale graphs are synthetic. Choose 2, 5, or 20 dependencies per node to explore all nine benchmark cases. Counts are computed from the loaded data. Scale graphs use supplied grid positions, not a force layout; dense overviews may render slowly.</p>
         </section>
         <section>
           <h3 className="mb-2 text-sm font-semibold">Controls</h3>
@@ -207,17 +207,40 @@ export default function Workbench() {
           <div className="relative">
             <select
               aria-label="Choose dataset"
-              value={wb.source.kind === "import" ? "" : wb.source.kind}
-              onChange={(e) => e.target.value && wb.loadSample(e.target.value as "demo" | "stress")}
+              value={wb.source.kind === "import" ? "" : wb.source.sample ?? "demo"}
+              disabled={wb.loading}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === "demo" || value === "scale-1000" || value === "scale-10000" || value === "scale-50000") wb.loadSample(value);
+              }}
               className="appearance-none rounded-md border border-white/20 bg-transparent py-1 pl-2 pr-7 text-xs outline-none focus-visible:ring-2 focus-visible:ring-[#e9b44c]"
               data-testid="select-dataset"
             >
               {wb.source.kind === "import" && <option value="" className="text-black">Imported file</option>}
               <option value="demo" className="text-black">Demo (Atlas commerce)</option>
-              <option value="stress" className="text-black">Stress: 10,000 synthetic nodes</option>
+              <option value="scale-1000" className="text-black">Scale: 1,000 nodes</option>
+              <option value="scale-10000" className="text-black">Scale: 10,000 nodes</option>
+              <option value="scale-50000" className="text-black">Scale: 50,000 nodes</option>
             </select>
             <ChevronDown size={13} className="pointer-events-none absolute right-2 top-1.5" />
           </div>
+          {wb.source.kind === "stress" && (
+            <select
+              aria-label="Choose edge density"
+              data-testid="select-density"
+              value={wb.source.density ?? 2}
+              disabled={wb.loading}
+              onChange={(e) => {
+                const density = Number(e.target.value);
+                if ((density === 2 || density === 5 || density === 20) && wb.source.sample) wb.loadSample(wb.source.sample, density);
+              }}
+              className="rounded-md border border-white/20 bg-transparent px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-[#e9b44c]"
+            >
+              <option value="2" className="text-black">Sparse · ~2 edges/node</option>
+              <option value="5" className="text-black">Medium · ~5 edges/node</option>
+              <option value="20" className="text-black">Dense · ~20 edges/node</option>
+            </select>
+          )}
           {wb.loading && <span className="text-xs text-[hsl(42_20%_72%)]" role="status">Building dataset...</span>}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
@@ -238,6 +261,13 @@ export default function Workbench() {
            <button aria-label="Help and graph conventions" onClick={() => setDialog("help")} className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs hover:bg-white/10" data-testid="button-help"><CircleHelp size={14} /><span className="hidden sm:inline">Help</span></button>
         </div>
       </header>
+      {wb.source.kind === "stress" && (
+        <div className="shrink-0 border-b border-border bg-secondary px-4 py-1.5 text-xs text-muted-foreground" data-testid="note-scale">
+          Synthetic scale graph: {total.toLocaleString()} nodes · {ws.doc.edges.length.toLocaleString()} edges.
+          {" "}Grid coordinates, not a force layout. Zoom in for icons and hover cards; search a module to inspect its dependencies.
+          {wb.source.density === 20 && " Dense overviews can be slow on your device."}
+        </div>
+      )}
 
       {(ws.storageWarning || wb.persistError || ws.gridPlaced > 0) && (
         <div className="shrink-0 space-y-px text-xs">

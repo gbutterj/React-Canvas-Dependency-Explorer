@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 import { analyzeGraph } from "@/graph/analysis";
-import { createDemoDocument, createStressDocument } from "@/graph/fixtures";
+import { createDemoDocument } from "@/graph/fixtures";
+import { createScaleDocument, sampleFromUrl, type SampleKind, type ScaleDensity } from "@/graph/scale-fixtures";
 import { buildGraphIndex, neighborhood, parseGraphDocument, reachable } from "@/graph/model";
 import { SpatialIndex } from "@/graph/spatial";
 import type { GraphAnalysis, GraphDocument, GraphIndex, NodeKind, Point } from "@/graph/types";
@@ -8,7 +9,7 @@ import type { Role, Scene } from "@/lib/renderer";
 
 export type Mode = "both" | "dependencies" | "dependents";
 export interface Focus { root: string; depth: number }
-export interface Source { kind: "demo" | "stress" | "import"; label: string }
+export interface Source { kind: "demo" | "stress" | "import"; label: string; sample?: SampleKind; density?: ScaleDensity }
 export interface Notice { id: number; tone: "ok" | "error" | "info"; text: string }
 
 export interface Workspace {
@@ -68,19 +69,24 @@ function buildWorkspace(doc: GraphDocument): Workspace {
 }
 
 type Loaded = { doc: GraphDocument | null; source: Source; error: string | null };
-function load(kind: "demo" | "stress"): Loaded {
+function load(sample: SampleKind, density: ScaleDensity = 2): Loaded {
+  const kind = sample === "demo" ? "demo" : "stress";
   try {
-    if (kind === "demo") return { doc: createDemoDocument(), source: { kind, label: "Demo dataset (synthetic)" }, error: null };
-    return { doc: createStressDocument(), source: { kind, label: "Synthetic stress benchmark" }, error: null };
+    if (kind === "demo") return { doc: createDemoDocument(), source: { kind, sample, label: "Demo dataset (synthetic)" }, error: null };
+    const count = sample === "scale-1000" ? 1000 : sample === "scale-50000" ? 50000 : 10000;
+    return { doc: createScaleDocument(count, density), source: { kind, sample, density, label: `${count.toLocaleString()} synthetic nodes` }, error: null };
   } catch (e) {
     return { doc: null, source: { kind, label: "Dataset" }, error: msg(e) };
   }
 }
 
 export function useWorkbench() {
-  const [loaded, setLoaded] = useState<Loaded>(() => load("demo"));
+  const [loaded, setLoaded] = useState<Loaded>(() => {
+    const sample = sampleFromUrl();
+    return load(sample.kind, sample.density);
+  });
   const [loading, setLoading] = useState(false);
-   const [selected, setSelected] = useState<string | null>("checkout-api");
+   const [selected, setSelected] = useState<string | null>(() => sampleFromUrl().kind === "demo" ? "checkout-api" : null);
   const [query, setQuery] = useState("");
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<NodeKind>>(new Set());
   const [cyclesOnly, setCyclesOnly] = useState(false);
@@ -122,17 +128,17 @@ export function useWorkbench() {
     setFitTick((t) => t + 1);
   }, [resetView]);
 
-  const loadSample = useCallback((kind: "demo" | "stress") => {
+  const loadSample = useCallback((kind: SampleKind, density: ScaleDensity = loaded.source.density ?? 2) => {
     setLoading(true);
     window.setTimeout(() => {
-      const r = load(kind);
+      const r = load(kind, density);
       resetView();
       setLoaded(r);
       setLoading(false);
       setFitTick((t) => t + 1);
       if (r.error) notify("error", r.error);
     }, 30);
-  }, [resetView, notify]);
+  }, [resetView, notify, loaded.source.density]);
 
   const importText = useCallback((text: string, name: string): string | null => {
     let raw: unknown;
