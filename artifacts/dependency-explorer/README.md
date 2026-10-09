@@ -77,3 +77,7 @@ Run from the workspace root. Requires Node 24's native WebSocket client and Chro
 The matrix covers 1,000 / 10,000 / 50,000 nodes at approximately 2 / 5 / 20 outgoing edges per node. Results and a self-contained downloadable HTML report are written to `generated-artifacts/graph-benchmarks/`, excluded from Git and deployment.
 
 The `benchmark.html` developer entry imports the real model and renderer but does not run the React panels. It is not a production build entry. Timings distinguish model costs, Canvas command submission and redraw-request-to-animation-frame latency. They do not measure physical input-to-display latency or establish a guaranteed node limit. See the report for hardware, browser rendering mode, sample counts and workload details.
+
+Crowded views explicitly show **Reduced detail**: ordinary edges are sampled and ordinary nodes can share density cells. Highlights, hovered/selected incident edges, cycle indicators and pins retain individual treatment; the model and picking stay exact. Zoom in or focus to inspect relationships. Huge highlights and cold cache rebuilds can still be expensive.
+
+See [measured rendering performance](docs/renderer-performance.md) for the complete before/after matrix, caching rules, tradeoffs and regression-check commands.

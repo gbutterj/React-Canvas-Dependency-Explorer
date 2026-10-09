@@ -5,14 +5,14 @@ generated = []
 id = "ZZVlt5Bias_hfVtZb0Ad2"
 uri = "file://generated-artifacts/graph-benchmarks/report.html"
 type = "html"
-title = "Dependency Explorer — Scale Benchmark Report"
-description = "Measured results for nine graph sizes/densities, overview versus zoomed interaction, model timings, methodology, environment details and downloadable raw JSON."
+title = "Graph rendering: before and after"
+description = "Full 1k/10k/50k × degree 2/5/20 comparison, phase profiles, raw results, conditions and visual-detail tradeoffs. Headless software-rendering measurements, not guaranteed FPS."
 logical_id = "acb7e036-9275-4c9f-b13b-83ca861eb5c7"
-content_hash = "sha256:7a58bb102207da51a7922d99d79e6664812db7a7af05e91aae2486177e06d64c"
-size = 45004
-mtime_ms = 1791585817935
-storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/acb7e036-9275-4c9f-b13b-83ca861eb5c7/389cfbc3-e06a-4714-9469-3e5be1603005"
-storage_version_token = "1791585875044020"
+content_hash = "sha256:3ba7e03137168a6e5d0a1f4cbecb11a7b4d9319d96ef7b50695e50f3e4a96983"
+size = 97607
+mtime_ms = 1791586412333
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:118a517d-ee21-4121-bf3a-8c80ed6eda9f/acb7e036-9275-4c9f-b13b-83ca861eb5c7/c18cb8ac-38ca-4ca8-928b-2145485beeb0"
+storage_version_token = "1791586490265960"
 content_type = "text/html"
 
 [[outputs]]

@@ -1,6 +1,6 @@
 /**
  * Developer-only browser microbenchmark. Imports the actual model and renderer.
- * No changes to production algorithms, limits or rendering behavior.
+ * Instrumentation is instance-local and does not change rendering policy.
  */
 import { createStressDocument } from "../graph/fixtures";
 import { analyzeGraph } from "../graph/analysis";
@@ -72,19 +72,46 @@ async function runCase(count: number, degree: number) {
   let stats: RenderStats | null = null;
   let submitted: number[] = [];
   let submitTimes: number[] = [];
+  let profiles: Record<string, number[]> = {};
+  let frameProfile: Record<string, number> = {};
+  let inEdges = false;
   const renderer = new GraphRenderer(canvas, {
     onHover: () => {}, onSelect: () => {}, onActivate: () => {},
     onDragEnd: () => {}, onStats: (s) => { stats = s; },
   });
   // TS private methods remain ordinary methods at runtime. Instrument only the
   // benchmark's instance so the renderer source stays exactly as shipped.
-  const instrumented = renderer as unknown as { draw(): void };
+  const instrumented = renderer as unknown as { draw(): void; edges(...args: unknown[]): void; drawMinimap(): void };
+  for (const method of ["edges", "drawMinimap"] as const) {
+    const original = instrumented[method].bind(renderer);
+    instrumented[method] = (...args: unknown[]) => {
+      const t = performance.now();
+      inEdges = method === "edges";
+      const result = original(...args);
+      inEdges = false;
+      frameProfile[method] = (frameProfile[method] ?? 0) + performance.now() - t;
+      return result;
+    };
+  }
+  // stroke/fill submission is timed separately within the edge pass. Deferred
+  // raster/compositing remains in the request-to-rAF metric, not these timers.
+  const context = canvas.getContext("2d")!;
+  for (const method of ["stroke", "fill"] as const) {
+    const original = context[method].bind(context);
+    (context as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+      const t = performance.now();
+      (original as (...args: unknown[]) => void)(...args);
+      if (inEdges) frameProfile.canvasSubmit = (frameProfile.canvasSubmit ?? 0) + performance.now() - t;
+    };
+  }
   const actualDraw = instrumented.draw.bind(renderer);
   instrumented.draw = () => {
     const t = performance.now();
+    frameProfile = {};
     actualDraw();
     submitted.push(performance.now() - t);
     submitTimes.push(performance.now());
+    for (const [name, ms] of Object.entries(frameProfile)) (profiles[name] ??= []).push(ms);
   };
   const scene: Scene = {
     index, positions, spatial, visible: null, matches: null, highlight: null,
@@ -100,7 +127,7 @@ async function runCase(count: number, degree: number) {
     for (const view of ["overview", "zoomed"] as const) {
       if (view === "zoomed") renderer.centerOn(positions.get(doc.nodes[Math.floor(count / 2)]!.id)!, 1, false);
       for (let warmup = 0; warmup < 2; warmup++) { renderer.panBy(0.5, 0); await nextFrame(); }
-      submitted = []; submitTimes = [];
+      submitted = []; submitTimes = []; profiles = {};
       const panLatency: number[] = [];
       for (let step = 0; step < 12; step++) {
         const t = performance.now();
@@ -109,6 +136,7 @@ async function runCase(count: number, degree: number) {
         panLatency.push(performance.now() - t);
       }
       const panDraw = summary(submitted);
+      const panProfile = Object.fromEntries(Object.entries(profiles).map(([name, samples]) => [name, summary(samples)]));
       const panIntervals = summary(submitTimes.slice(1).map((t, i) => t - submitTimes[i]!));
       const zoomLatency: number[] = [];
       for (let step = 0; step < 6; step++) {
@@ -142,7 +170,7 @@ async function runCase(count: number, degree: number) {
       canvas.setPointerCapture = capture;
       // No saved layouts are read or written; each case uses a fresh scene.
       views[view] = {
-        zoom: renderer.cam.k, stats, panDrawMs: panDraw, panFrameIntervalMs: panIntervals,
+        zoom: renderer.cam.k, stats, panDrawMs: panDraw, panFrameIntervalMs: panIntervals, panProfile,
         panRequestToRafMs: summary(panLatency), zoomRequestToRafMs: summary(zoomLatency),
         dragRequestToRafMs: summary(dragLatency), pointerHandlerMeanMs: pickBatch / 1000,
       };
@@ -159,6 +187,9 @@ async function runCase(count: number, degree: number) {
 }
 
 declare global {
-  interface Window { dependencyBenchmark: { runCase: typeof runCase; ready: boolean } }
+  interface Window { dependencyBenchmark: { runCase: typeof runCase; checkRenderer(): Promise<unknown>; ready: boolean } }
 }
-window.dependencyBenchmark = { runCase, ready: true };
+window.dependencyBenchmark = {
+  runCase, ready: true,
+  checkRenderer: async () => (await import("./renderer-checks")).checkRenderer(),
+};

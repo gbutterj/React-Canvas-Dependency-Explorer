@@ -1,6 +1,7 @@
 import type { SpatialIndex } from "@/graph/spatial";
 import type { DependencyEdge, GraphIndex, Point } from "@/graph/types";
 import { ICON_PATH, KIND_COLOR, ROLE_COLOR } from "./node-style";
+import { edgeBudget, sampleEdges } from "./render-detail";
 
 export type Role = "root" | "dependency" | "dependent" | "both";
 export interface Scene {
@@ -15,7 +16,11 @@ export interface Scene {
   cycleIds: ReadonlySet<string>;
   pinned: ReadonlySet<string>;
 }
-export interface RenderStats { nodes: number; edges: number; total: number; k: number }
+export interface RenderStats {
+  /** Submitted marks/paths, not a count of relationships in the model. */
+  nodes: number; edges: number; total: number; k: number;
+  nodeCandidates: number; edgeCandidates: number; nodeAggregates: number; reduced: boolean;
+}
 export interface Handlers {
   onHover(id: string | null, x: number, y: number): void;
   onSelect(id: string | null): void;
@@ -24,6 +29,11 @@ export interface Handlers {
   onStats(s: RenderStats): void;
 }
 interface Cam { x: number; y: number; k: number }
+interface EdgeGroups {
+  inView: Set<string>; base: DependencyEdge[]; dep: DependencyEdge[]; dpn: DependencyEdge[];
+  sampled: DependencyEdge[]; budget: number; hovered: string | null;
+}
+interface EdgePaths { k: number; r: number; arrows: boolean; line: Path2D; head: Path2D; count: number }
 
 const TAU = Math.PI * 2;
 let iconPaths: Record<string, Path2D> | null = null;
@@ -55,6 +65,10 @@ export class GraphRenderer {
   private mm = { minX: 0, minY: 0, s: 1, ox: 0, oy: 0 };
   private mmBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   private mmDirty = true;
+  private mmLayer: HTMLCanvasElement | null = null;
+  private mmMoving: string | null = null;
+  private edgeGroups: EdgeGroups | null = null;
+  private pathCache = new Map<DependencyEdge[], EdgePaths>();
   private ptrs = new Map<number, Point>();
   private mode: "none" | "pan" | "drag" | "pinch" = "none";
   private downId: string | null = null;
@@ -82,6 +96,10 @@ export class GraphRenderer {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    this.pathCache.clear();
+    this.edgeGroups = null;
+    this.mmLayer = null;
+    this.images.clear();
     const c = this.canvas;
     c.removeEventListener("pointerdown", this.onDown);
     c.removeEventListener("pointermove", this.onMove);
@@ -96,6 +114,8 @@ export class GraphRenderer {
     this.scene = s;
     this.dimTarget = s && (s.highlight || s.matches) ? 1 : 0;
     this.mmDirty = true;
+    this.edgeGroups = null;
+    this.pathCache.clear();
     this.request();
   }
 
@@ -236,39 +256,58 @@ export class GraphRenderer {
     const inView = new Set<string>();
     for (const id of ids) if (!vis || vis.has(id)) inView.add(id);
 
-    const base: DependencyEdge[] = [], dep: DependencyEdge[] = [], dpn: DependencyEdge[] = [];
     const hl = s.highlight;
-    const classify = (e: DependencyEdge): void => {
-      if (hl) {
-        const a = hl.get(e.source), b = hl.get(e.target);
-        if (a && b) {
-          const aDep = a === "root" || a === "dependency" || a === "both";
-          const bDep = b === "dependency" || b === "both";
-          if (aDep && bDep && (s.transitive || a === "root")) { dep.push(e); return; }
-          const aDpn = a === "dependent" || a === "both";
-          const bDpn = b === "root" || b === "dependent" || b === "both";
-          if (aDpn && bDpn && (s.transitive || b === "root")) { dpn.push(e); return; }
+    // Translation does not change adjacency or classification. Reuse the exact
+    // incident edge lists while the padded viewport contains the same IDs.
+    let groups = this.edgeGroups;
+    if (!groups || groups.inView.size !== inView.size || [...inView].some(id => !groups!.inView.has(id))) {
+      const base: DependencyEdge[] = [], dep: DependencyEdge[] = [], dpn: DependencyEdge[] = [];
+      const classify = (e: DependencyEdge): void => {
+        if (hl) {
+          const a = hl.get(e.source), b = hl.get(e.target);
+          if (a && b) {
+            const aDep = a === "root" || a === "dependency" || a === "both";
+            const bDep = b === "dependency" || b === "both";
+            if (aDep && bDep && (s.transitive || a === "root")) { dep.push(e); return; }
+            const aDpn = a === "dependent" || a === "both";
+            const bDpn = b === "root" || b === "dependent" || b === "both";
+            if (aDpn && bDpn && (s.transitive || b === "root")) { dpn.push(e); return; }
+          }
+        }
+        base.push(e);
+      };
+      for (const id of inView) {
+        for (const eid of s.index.outgoing.get(id) ?? []) {
+          const e = s.index.edges.get(eid);
+          if (e && (!vis || vis.has(e.target))) classify(e);
+        }
+        for (const eid of s.index.incoming.get(id) ?? []) {
+          const e = s.index.edges.get(eid);
+          if (e && !inView.has(e.source) && (!vis || vis.has(e.source))) classify(e);
         }
       }
-      base.push(e);
-    };
-    for (const id of inView) {
-      for (const eid of s.index.outgoing.get(id) ?? []) {
-        const e = s.index.edges.get(eid);
-        if (e && (!vis || vis.has(e.target))) classify(e);
-      }
-      for (const eid of s.index.incoming.get(id) ?? []) {
-        const e = s.index.edges.get(eid);
-        if (e && !inView.has(e.source) && (!vis || vis.has(e.source))) classify(e);
-      }
+      groups = { inView, base, dep, dpn, sampled: base, budget: -1, hovered: null };
+      this.edgeGroups = groups;
+      this.pathCache.clear();
     }
-     const r = Math.max(2.2, Math.min(k * 18, 24));
+    const { base, dep, dpn } = groups;
+    const budget = edgeBudget(k, base.length);
+    if (groups.budget !== budget || groups.hovered !== this.hovered) {
+      groups.sampled = sampleEdges(base, budget, e =>
+        e.source === s.selected || e.target === s.selected ||
+        e.source === this.hovered || e.target === this.hovered ||
+        (s.cycleIds.has(e.source) && s.cycleIds.has(e.target)));
+      groups.budget = budget;
+      groups.hovered = this.hovered;
+      this.pathCache.clear();
+    }
+    const r = Math.max(2.2, Math.min(k * 18, 24));
     const dimmed = this.dim > 0.01;
     const crowd = base.length > 4000;
     const baseAlpha = (crowd ? 0.28 : 0.5) * (1 - 0.8 * this.dim) + 0.0;
-    this.edges(base, "#4a5a64", crowd ? 0.7 : 1, baseAlpha, r, k >= 0.3);
-    this.edges(dep, ROLE_COLOR.dependency, 2, 1, r, true);
-    this.edges(dpn, ROLE_COLOR.dependent, 2, 1, r, true);
+    const edgeCount = this.edges(groups.sampled, "#4a5a64", crowd ? 0.7 : 1, baseAlpha, r, k >= 0.3)
+      + this.edges(dep, ROLE_COLOR.dependency, 2, 1, r, true)
+      + this.edges(dpn, ROLE_COLOR.dependent, 2, 1, r, true);
 
     // nodes
     const faded: string[] = [], normal: string[] = [], strong: string[] = [];
@@ -280,14 +319,29 @@ export class GraphRenderer {
       else normal.push(id);
     }
     const labels: { id: string; x: number; y: number; a: number; bold: boolean }[] = [];
-     const showAll = r >= 9 && k >= (s.positions.size <= 200 ? 0.45 : 0.75);
+    const aggregate = k < 0.3 && inView.size > 4000;
+    // Screen-space density cells. A representative kind supplies color; these
+    // marks do not replace node identity or the exact spatial picking index.
+    const bins = new Map<string, { x: number; y: number; n: number; kind: keyof typeof KIND_COLOR; alpha: number }>();
+    let nodeCount = 0;
+    const showAll = r >= 9 && k >= (s.positions.size <= 200 ? 0.45 : 0.75);
     const drawList = (list: string[], alpha: number) => {
       for (const id of list) {
         const p = s.positions.get(id), n = s.index.nodes.get(id);
         if (!p || !n) continue;
         const sx = p.x * k + cx, sy = p.y * k + cy;
         const role = hl?.get(id);
-        this.node(id, sx, sy, r, alpha, role, n.kind, n.icon, s);
+        const protectedNode = role || id === s.selected || id === this.hovered || id === this.downId
+          || s.cycleIds.has(id) || s.pinned.has(id) || m?.has(id);
+        if (aggregate && !protectedNode) {
+          const key = `${Math.floor(sx / 6)},${Math.floor(sy / 6)},${alpha}`;
+          const bin = bins.get(key);
+          if (bin) { bin.x += sx; bin.y += sy; bin.n++; }
+          else bins.set(key, { x: sx, y: sy, n: 1, kind: n.kind, alpha });
+          continue;
+        }
+        nodeCount++;
+        this.node(id, sx, sy, protectedNode ? Math.max(r, 4) : r, alpha, role, n.kind, n.icon, s);
         const emph = !!role || id === s.selected || id === this.hovered;
         if ((showAll && labels.length < 500) || (emph && k >= 0.3))
           labels.push({ id, x: sx, y: sy + r + 12, a: alpha, bold: emph });
@@ -295,6 +349,12 @@ export class GraphRenderer {
     };
     drawList(faded, dimmed ? 1 - 0.8 * this.dim : 1);
     drawList(normal, 1);
+    for (const b of bins.values()) {
+      ctx.globalAlpha = b.alpha;
+      ctx.fillStyle = KIND_COLOR[b.kind];
+      const d = Math.min(3.5, 1.5 + Math.log2(b.n) * 0.4);
+      ctx.fillRect(b.x / b.n - d / 2, b.y / b.n - d / 2, d, d);
+    }
     drawList(strong, 1);
     ctx.textAlign = "center";
     ctx.lineJoin = "round";
@@ -311,12 +371,18 @@ export class GraphRenderer {
       ctx.fillText(t, l.x, l.y);
     }
     ctx.globalAlpha = 1;
-    const key = `${inView.size}|${base.length + dep.length + dpn.length}|${k.toFixed(3)}`;
+    const edgeCandidates = base.length + dep.length + dpn.length;
+    const reduced = groups.sampled.length < base.length || bins.size > 0;
+    const key = `${inView.size}|${nodeCount}|${bins.size}|${edgeCount}|${edgeCandidates}|${reduced}|${k.toFixed(3)}`;
     if (key !== this.statsKey) {
       this.statsKey = key;
       this.handlers.onStats({
-        nodes: inView.size,
-        edges: base.length + dep.length + dpn.length,
+        nodes: nodeCount + bins.size,
+        edges: edgeCount,
+        nodeCandidates: inView.size,
+        edgeCandidates,
+        nodeAggregates: bins.size,
+        reduced,
         total: vis ? vis.size : s.positions.size,
         k,
       });
@@ -325,51 +391,63 @@ export class GraphRenderer {
   }
 
   private edges(list: DependencyEdge[], color: string, width: number, alpha: number, r: number, arrows: boolean) {
-    if (!list.length) return;
+    if (!list.length) return 0;
     const s = this.scene!;
     const { x: cx, y: cy, k } = this.cam;
-    const line = new Path2D(), head = new Path2D();
-    for (const e of list) {
-      const a = s.positions.get(e.source), b = s.positions.get(e.target);
-      if (!a || !b) continue;
-      const ax = a.x * k + cx, ay = a.y * k + cy, bx = b.x * k + cx, by = b.y * k + cy;
-      if (e.source === e.target) {
-        const lx = ax + r * 0.9, ly = ay - r * 1.1;
-        line.moveTo(lx + 8, ly);
-        line.arc(lx, ly, 8, 0, TAU);
-        continue;
+    let cached = this.pathCache.get(list);
+    if (!cached || cached.k !== k || cached.r !== r || cached.arrows !== arrows) {
+      const line = new Path2D(), head = new Path2D();
+      let count = 0;
+      for (const e of list) {
+        const a = s.positions.get(e.source), b = s.positions.get(e.target);
+        if (!a || !b) continue;
+        // Geometry is scale-dependent but translation-independent.
+        const ax = a.x * k, ay = a.y * k, bx = b.x * k, by = b.y * k;
+        if (e.source === e.target) {
+          const lx = ax + r * 0.9, ly = ay - r * 1.1;
+          line.moveTo(lx + 8, ly);
+          line.arc(lx, ly, 8, 0, TAU);
+          count++;
+          continue;
+        }
+        const dx = bx - ax, dy = by - ay;
+        const len = Math.hypot(dx, dy);
+        if (len < 2 * r + 2) continue;
+        const mx = (ax + bx) / 2 - (dy / len) * len * 0.1, my = (ay + by) / 2 + (dx / len) * len * 0.1;
+        let ux = mx - ax, uy = my - ay;
+        let l = Math.hypot(ux, uy);
+        ux /= l; uy /= l;
+        let vx = mx - bx, vy = my - by;
+        l = Math.hypot(vx, vy);
+        vx /= l; vy /= l;
+        const sx = ax + ux * r, sy = ay + uy * r;
+        const ex = bx + vx * (r + 1.5), ey = by + vy * (r + 1.5);
+        line.moveTo(sx, sy);
+        line.quadraticCurveTo(mx, my, ex, ey);
+        count++;
+        if (arrows) {
+          const sz = Math.min(8, Math.max(5, len * 0.15));
+          const wx = -vx, wy = -vy;
+          head.moveTo(ex, ey);
+          head.lineTo(ex - wx * sz - wy * sz * 0.5, ey - wy * sz + wx * sz * 0.5);
+          head.lineTo(ex - wx * sz + wy * sz * 0.5, ey - wy * sz - wx * sz * 0.5);
+          head.closePath();
+        }
       }
-      const dx = bx - ax, dy = by - ay;
-      const len = Math.hypot(dx, dy);
-      if (len < 2 * r + 2) continue;
-      const mx = (ax + bx) / 2 - (dy / len) * len * 0.1, my = (ay + by) / 2 + (dx / len) * len * 0.1;
-      let ux = mx - ax, uy = my - ay;
-      let l = Math.hypot(ux, uy);
-      ux /= l; uy /= l;
-      let vx = mx - bx, vy = my - by;
-      l = Math.hypot(vx, vy);
-      vx /= l; vy /= l;
-      const sx = ax + ux * r, sy = ay + uy * r;
-      const ex = bx + vx * (r + 1.5), ey = by + vy * (r + 1.5);
-      line.moveTo(sx, sy);
-      line.quadraticCurveTo(mx, my, ex, ey);
-      if (arrows) {
-        const sz = Math.min(8, Math.max(5, len * 0.15));
-        const wx = -vx, wy = -vy;
-        head.moveTo(ex, ey);
-        head.lineTo(ex - wx * sz - wy * sz * 0.5, ey - wy * sz + wx * sz * 0.5);
-        head.lineTo(ex - wx * sz + wy * sz * 0.5, ey - wy * sz - wx * sz * 0.5);
-        head.closePath();
-      }
+      cached = { k, r, arrows, line, head, count };
+      this.pathCache.set(list, cached);
     }
     const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(cx, cy);
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = width;
-    ctx.stroke(line);
-    if (arrows) ctx.fill(head);
-    ctx.globalAlpha = 1;
+    ctx.stroke(cached.line);
+    if (arrows) ctx.fill(cached.head);
+    ctx.restore();
+    return cached.count;
   }
 
   private node(
@@ -461,9 +539,12 @@ export class GraphRenderer {
     const W = c.clientWidth, H = c.clientHeight;
     if (!W || !H) return;
     const d = this.dpr;
+    const moving = this.mode === "drag" && this.moved ? this.downId : null;
+    let rebuild = this.mmDirty || this.mmMoving !== moving || !this.mmLayer;
     if (c.width !== Math.round(W * d) || c.height !== Math.round(H * d)) {
       c.width = Math.round(W * d);
       c.height = Math.round(H * d);
+      rebuild = true;
     }
     const g = c.getContext("2d");
     if (!g) return;
@@ -478,22 +559,40 @@ export class GraphRenderer {
         if (p.y > maxY) maxY = p.y;
       }
       this.mmBounds = isFinite(minX) ? { minX, minY, maxX, maxY } : { minX: 0, minY: 0, maxX: 1, maxY: 1 };
-      this.mmDirty = false;
+      rebuild = true;
     }
     const b = this.mmBounds;
     const bw = Math.max(b.maxX - b.minX, 1), bh = Math.max(b.maxY - b.minY, 1);
-    // include viewport in bounds so the rectangle stays visible
+    // Bounds are fixed during dragging; rebuild at release, not every move.
     const sc = Math.min((W - 14) / bw, (H - 14) / bh);
     this.mm = { minX: b.minX, minY: b.minY, s: sc, ox: (W - bw * sc) / 2, oy: (H - bh * sc) / 2 };
     const m = this.mm;
+    if (rebuild) {
+      this.mmLayer ??= document.createElement("canvas");
+      this.mmLayer.width = c.width;
+      this.mmLayer.height = c.height;
+      const layer = this.mmLayer.getContext("2d")!;
+      layer.setTransform(d, 0, 0, d, 0, 0);
+      layer.fillStyle = "rgba(241,237,227,0.92)";
+      layer.fillRect(0, 0, W, H);
+      for (const id of s.visible ?? s.positions.keys()) {
+        if (id === moving) continue;
+        const p = s.positions.get(id);
+        if (!p) continue;
+        const role = s.highlight?.get(id);
+        layer.fillStyle = role ? ROLE_COLOR[role] : "rgba(20,33,43,0.55)";
+        const z = role ? 3 : 1.6;
+        layer.fillRect((p.x - m.minX) * m.s + m.ox - z / 2, (p.y - m.minY) * m.s + m.oy - z / 2, z, z);
+      }
+      this.mmDirty = false;
+      this.mmMoving = moving;
+    }
     g.setTransform(d, 0, 0, d, 0, 0);
     g.clearRect(0, 0, W, H);
-    g.fillStyle = "rgba(241,237,227,0.92)";
-    g.fillRect(0, 0, W, H);
-    for (const id of s.visible ?? s.positions.keys()) {
-      const p = s.positions.get(id);
-      if (!p) continue;
-      const role = s.highlight?.get(id);
+    g.drawImage(this.mmLayer!, 0, 0, W, H);
+    if (moving && (!s.visible || s.visible.has(moving))) {
+      const p = s.positions.get(moving)!;
+      const role = s.highlight?.get(moving);
       g.fillStyle = role ? ROLE_COLOR[role] : "rgba(20,33,43,0.55)";
       const z = role ? 3 : 1.6;
       g.fillRect((p.x - m.minX) * m.s + m.ox - z / 2, (p.y - m.minY) * m.s + m.oy - z / 2, z, z);
@@ -584,7 +683,7 @@ export class GraphRenderer {
       const np = { x: (p.x - this.cam.x) / this.cam.k + this.dragOff.x, y: (p.y - this.cam.y) / this.cam.k + this.dragOff.y };
       s.positions.set(this.downId, np);
       s.spatial.update(this.downId, np);
-      this.mmDirty = true;
+      this.pathCache.clear();
       this.canvas.style.cursor = "grabbing";
       this.request();
     } else if (this.mode === "pan") {
@@ -602,7 +701,11 @@ export class GraphRenderer {
     }
     if (this.mode === "none") return;
     if (!this.moved) this.handlers.onSelect(this.downId);
-    else if (this.mode === "drag" && this.downId) this.handlers.onDragEnd(this.downId);
+    else if (this.mode === "drag" && this.downId) {
+      this.mmDirty = true;
+      this.handlers.onDragEnd(this.downId);
+      this.request();
+    }
     this.mode = "none";
     this.downId = null;
     this.canvas.style.cursor = "grab";

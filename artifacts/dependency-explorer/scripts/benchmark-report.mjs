@@ -3,10 +3,29 @@ import path from "node:path";
 
 const dir = path.resolve("generated-artifacts/graph-benchmarks");
 const data = JSON.parse(await readFile(path.join(dir, "results.json"), "utf8"));
+const before = await readFile(path.join(dir, "before.json"), "utf8").then(JSON.parse).catch(() => null);
 const num = value => Number.isFinite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "—";
 const esc = s => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const setup = c => ["jsonParse", "validate", "index", "analysis", "positions", "spatial"].reduce((sum, phase) => sum + c.phases[phase].median, 0);
 const successful = data.cases.filter(c => !c.error);
+const comparisons = before ? successful.map(c => {
+  const b = before.cases.find(b => b.nodes === c.nodes && b.requestedEdgesPerNode === c.requestedEdgesPerNode);
+  if (!b || b.error) return "";
+  return `<tr data-density="${c.requestedEdgesPerNode}"><th>${num(c.nodes)} / ~${c.requestedEdgesPerNode}</th>
+    <td>${num(b.views.overview.panRequestToRafMs.median)}</td><td>${num(c.views.overview.panRequestToRafMs.median)}</td>
+    <td>${num(b.views.overview.dragRequestToRafMs.median)}</td><td>${num(c.views.overview.dragRequestToRafMs.median)}</td>
+    <td>${num(b.views.zoomed.panRequestToRafMs.median)}</td><td>${num(c.views.zoomed.panRequestToRafMs.median)}</td>
+    <td>${num(c.views.overview.stats?.edges)} / ${num(c.views.overview.stats?.edgeCandidates)}</td>
+    <td>${num(c.views.overview.stats?.nodes)} / ${num(c.views.overview.stats?.nodeCandidates)}</td></tr>`;
+}).join("") : "";
+const profiles = successful.map(c => {
+  const b = before?.cases.find(b => b.nodes === c.nodes && b.requestedEdgesPerNode === c.requestedEdgesPerNode);
+  const p = c.views.overview.panProfile, bp = b?.views?.overview?.panProfile;
+  return `<tr><th>${num(c.nodes)} / ~${c.requestedEdgesPerNode}</th>
+    <td>${num(bp?.edges?.median)}</td><td>${num(p?.edges?.median)}</td>
+    <td>${num(bp?.canvasSubmit?.median)}</td><td>${num(p?.canvasSubmit?.median)}</td>
+    <td>${num(bp?.drawMinimap?.median)}</td><td>${num(p?.drawMinimap?.median)}</td></tr>`;
+}).join("");
 const gpu = data.system.gpu;
 const rows = successful.map(c => `<tr data-density="${c.requestedEdgesPerNode}">
   <th scope="row">${num(c.nodes)}</th><td>${num(c.edges)}</td><td>~${c.requestedEdgesPerNode}</td>
@@ -22,7 +41,7 @@ const interactions = successful.map(c => `<tr><th scope="row">${num(c.nodes)} / 
 </tr>`).join("");
 const phases = successful.map(c => `<tr><th scope="row">${num(c.nodes)} / ~${c.requestedEdgesPerNode}</th>${["jsonParse", "validate", "index", "analysis", "positions", "spatial", "dependencies", "dependents"].map(p => `<td>${num(c.phases[p].median)}</td>`).join("")}<td>${num(c.heapMiB)}</td></tr>`).join("");
 const errors = data.cases.filter(c => c.error).map(c => `<p class="warning">${num(c.nodes)} nodes / degree ${c.requestedEdgesPerNode}: ${esc(c.error)}</p>`).join("");
-const json = JSON.stringify(data).replaceAll("<", "\\u003c");
+const json = JSON.stringify({ ...data, before }).replaceAll("<", "\\u003c");
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Dependency Explorer · measured scale report</title>
 <style>
@@ -49,9 +68,20 @@ code{font-size:12px;overflow-wrap:anywhere}footer{margin-top:32px;color:#52636c;
 <p>All timings are milliseconds. Pan latency measures a redraw request through the next animation-frame callback after drawing. Draw time measures JavaScript submission of Canvas commands, not completed pixel rendering. Setup is the sum of phase medians, not a separately measured total.</p>
 <div class="scroll"><table><thead><tr><th>Nodes</th><th>Edges</th><th>Degree</th><th>Setup sum</th><th>Overview pan</th><th>Zoomed pan</th><th>Overview draw</th><th>Zoomed draw</th></tr></thead><tbody>${rows}</tbody></table></div>
 ${errors}
+${before ? `<h2>Equivalent before / after</h2>
+<p>Fresh instrumented runs with the same fixtures, viewport, software rendering, sample counts and pointer actions. Before started ${esc(before.startedAt)}; after started ${esc(data.startedAt)}. All values are milliseconds. Samples are short and descriptive, not guaranteed FPS.</p>
+<div class="scroll"><table><thead><tr><th>Nodes / degree</th><th>Before overview pan</th><th>After overview pan</th><th>Before overview drag</th><th>After overview drag</th><th>Before zoomed pan</th><th>After zoomed pan</th><th>Overview edge paths / candidates</th><th>Overview node marks / candidates</th></tr></thead><tbody>${comparisons}</tbody></table></div>` : ""}
+<h2>Overview rendering profile</h2>
+<p>Instance-local timers wrap the shipped edge pass and minimap. Edge pass includes path construction or cache lookup and stroke/fill submission. Submit is a subset of the edge pass; it does not include deferred raster completion. The larger request-to-rAF values above expose scheduling and deferred software raster/compositing workload, but do not isolate raster time. Medians should not be subtracted as if they were paired samples.</p>
+<div class="scroll"><table><thead><tr><th>Nodes / degree</th><th>Before edge pass</th><th>After edge pass</th><th>Before edge submit</th><th>After edge submit</th><th>Before minimap</th><th>After minimap</th></tr></thead><tbody>${profiles}</tbody></table></div>
+<h2>Rendering tradeoffs</h2>
+<ul><li>Crowded overviews (scale below 0.3 and more than 4,000 base edge candidates) use 1,800 evenly spaced base-edge representatives. Other views above 12,000 base edges use 4,000. Cyclic-to-cyclic edges and edges incident to selection/hover are additional, not capped. Directional highlighted edges are always kept, including arrowheads; a huge highlighted neighborhood can still be expensive.</li>
+<li>Below scale 0.3 with more than 4,000 visible nodes, ordinary nodes share 6-pixel density cells by faded state, colored by a representative kind. Highlighted, matching, selected, hovered, cyclic and pinned nodes stay individual. Counts and a visible notice identify reduced detail; zoom or focus to inspect relationships. Density cells are visual summaries, not selectable replacement graph nodes.</li>
+<li>Edge paths are reused on translation-only pans while the incident-node set and geometry are unchanged. Drag, scene updates and zoom invalidate paths. The minimap copies a cached static layer on pan; while dragging it overlays the moving node and recomputes bounds at release. Cold cache rebuilds and zoom still cost more than warm pans.</li>
+<li>The model, picking index and graph analysis remain exact. Icons return at their existing zoom thresholds. No force layout or model truncation is introduced. Import and analysis stalls are outside this rendering change.</li></ul>
 <h2>Zoom, dragging and visible workload</h2>
-<p>Same renderer handlers, with synthetic pointer events. OS event delivery and React selection/hover state updates are excluded. Candidate edges include incident off-screen edges and may be skipped when endpoints visually overlap.</p>
-<div class="scroll"><table><thead><tr><th>Nodes / degree</th><th>Overview zoom</th><th>Overview drag</th><th>Zoomed zoom</th><th>Zoomed drag</th><th>Zoomed nodes</th><th>Zoomed candidate edges</th></tr></thead><tbody>${interactions}</tbody></table></div>
+<p>Same renderer handlers, with synthetic pointer events. OS event delivery and React selection/hover state updates are excluded. Candidate edges include incident off-screen edges and may be skipped when endpoints visually overlap. Workload counts are the final stats after each view's zoom and drag samples, not pixel coverage or all model relationships.</p>
+<div class="scroll"><table><thead><tr><th>Nodes / degree</th><th>Overview zoom</th><th>Overview drag</th><th>Zoomed zoom</th><th>Zoomed drag</th><th>Zoomed node marks</th><th>Zoomed edge paths</th></tr></thead><tbody>${interactions}</tbody></table></div>
 <h2>Model costs and sampled heap</h2>
 <p>Each phase has three measurements. Reachability traverses the complete chain from either end. Heap is a post-case sample including fixture, JSON and benchmark allocation overhead—not steady-state viewer memory or total process memory.</p>
 <div class="scroll"><table><thead><tr><th>Nodes / degree</th><th>JSON parse</th><th>Validate</th><th>Index</th><th>SCC + components</th><th>Positions</th><th>Spatial index</th><th>Dependencies</th><th>Dependents</th><th>Heap MiB</th></tr></thead><tbody>${phases}</tbody></table></div>

@@ -89,7 +89,7 @@ try {
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1100, height: 850, deviceScaleFactor: 1, mobile: false });
   const url = process.env.BENCHMARK_URL || `https://${process.env.REPLIT_DEV_DOMAIN}/benchmark.html`;
   if (!process.env.BENCHMARK_URL && !process.env.REPLIT_DEV_DOMAIN) throw new Error("No preview domain or BENCHMARK_URL.");
-  for (const count of [1000, 10000, 50000]) {
+  for (const count of process.env.CHECKS_ONLY ? [] : [1000, 10000, 50000]) {
     for (const degree of [2, 5, 20]) {
       await page.send("Page.navigate", { url });
       let ready = false;
@@ -121,8 +121,20 @@ try {
       await save();
     }
   }
+  await page.send("Page.navigate", { url });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await page.send("Runtime.evaluate", { expression: "!!window.dependencyBenchmark?.ready", returnByValue: true });
+    if (response.result.value) break;
+    await sleep(100);
+  }
+  const checks = await page.send("Runtime.evaluate", {
+    expression: "window.dependencyBenchmark.checkRenderer()", awaitPromise: true, returnByValue: true,
+  });
+  if (checks.exceptionDetails) throw new Error(checks.exceptionDetails.exception?.description || checks.exceptionDetails.text);
+  console.log("Renderer regression checks:", JSON.stringify(checks.result.value));
+  results.rendererChecks = checks.result.value;
   results.finishedAt = new Date().toISOString();
-  await save();
+  if (!process.env.CHECKS_ONLY) await save();
   console.log(`Results: ${path.relative(process.cwd(), output)}/results.json`);
 } finally {
   page?.close(); browser?.close(); chrome.kill("SIGTERM");

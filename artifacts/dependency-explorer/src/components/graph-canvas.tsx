@@ -189,8 +189,9 @@ export const GraphCanvas = forwardRef<CanvasHandle, Props>(function GraphCanvas(
       </div>
 
       {stats && sc && (
-        <div className="mono pointer-events-none absolute bottom-3 left-3 z-10 hidden max-w-[60%] rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-[10.5px] text-muted-foreground backdrop-blur sm:block" data-testid="text-render-stats">
-          zoom {Math.round(stats.k * 100)}% / drawn this frame: {stats.nodes.toLocaleString()} of {stats.total.toLocaleString()} nodes, {stats.edges.toLocaleString()} edges
+        <div className={`mono pointer-events-none absolute bottom-3 left-3 z-10 max-w-[70%] rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-[10.5px] text-muted-foreground backdrop-blur ${stats.reduced ? "" : "hidden sm:block"}`} data-testid="text-render-stats" role="status">
+          zoom {Math.round(stats.k * 100)}% / {stats.nodeCandidates.toLocaleString()} of {stats.total.toLocaleString()} nodes in view / {stats.edges.toLocaleString()} edge paths of {stats.edgeCandidates.toLocaleString()} candidates
+          {stats.reduced && <span className="block font-semibold text-foreground" data-testid="text-reduced-detail">Reduced detail: edges may be sampled; {stats.nodeAggregates.toLocaleString()} node density cells. Zoom in or focus to inspect.</span>}
         </div>
       )}
     </div>
